@@ -1,0 +1,49 @@
+# Deployment and configuration
+.env
+.env.local
+config.yaml
+config.local.yaml
+
+# Build artifacts
+build/
+dist/
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+*.dll
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+*.egg
+
+# Dependency directories
+node_modules/
+vendor/
+venv/
+env/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Database and data files
+*.db
+*.sqlite
+*.sqlite3
+data/
+logs/
+
+# Docker
+.docker-sync
+docker-compose.override.yml
+
+# Misc
+.envrc
