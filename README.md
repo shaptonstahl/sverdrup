@@ -15,6 +15,10 @@ By analyzing DNS query logs and building a view of service usage over time, you 
 
 This data feeds retention decisions: which subscriptions are genuinely used, and which are just accumulating charges?
 
+## Why the name
+
+The sverdrup (Sv) is the oceanographers' unit of volume transport in ocean currents: 1 Sv = 10^6 m^3/s. It is named for the Norwegian oceanographer Harald Ulrik Sverdrup (1888-1957). This Sverdrup measures flow too: the flow of a household's streams.
+
 ## Architecture Overview
 
 Sverdrup is a containerized system with three components:
