@@ -52,6 +52,8 @@ python3 -m pytest
 cd server && go test ./...
 ```
 
+CI (`.github/workflows/ci.yml`) runs the Python suite on Python 3.11 and 3.12 and builds the Docker image for every pull request and every push to `main`.
+
 ## Reporting Issues
 
 Use GitHub Issues to report bugs or suggest features. Include:
