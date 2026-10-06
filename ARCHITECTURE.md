@@ -414,7 +414,7 @@ Run the Python suite with one command from the repository root: `python3 -m pyte
 - Edge cases: midnight boundaries, device name changes
 
 ### Dashboard Tests (Go)
-- Run with `cd server && go test ./...`, offline. They build a fixture database from `server/testdata/schema.sql`, a copy of the pipeline schema that `tests/test_server_schema.py` keeps identical to `sverdrup/db.py`
+- Run with `cd server && go test ./...`, offline. They build a fixture database from `server/testdata/schema.sql`, a copy of the pipeline schema that `tests/test_server_schema.py` checks matches `sverdrup/db.py` table by table (columns, indexes, foreign keys)
 - Integration tests for every page and API endpoint, including htmx fragments, input validation, escaping, the read-only connection and the no-database case
 - UI tests (Selenium or similar) for responsive layout and mobile rendering
 - Load tests with large datasets (1000+ sessions)
