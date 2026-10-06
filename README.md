@@ -23,18 +23,53 @@ Sverdrup is a containerized system with three components:
 2. **Processor** (Python) — Sessionizes DNS queries into viewing sessions and computes metrics
 3. **Dashboard** (Go + htmx) — Lightweight web UI, mobile-friendly, shows time-per-service and usage frequency
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design, including data, infrastructure, and security/trust layers.
 
 ## Quick Start
 
-[To be added during implementation phase]
+See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed setup instructions.
+
+**Minimal example (Docker Compose):**
+
+```bash
+# Create .env with your NextDNS credentials
+echo "NEXTDNS_API_KEY=your_key" > .env
+echo "NEXTDNS_PROFILE_ID=your_profile" >> .env
+
+# Start the container
+docker-compose up -d
+
+# Access the dashboard at http://localhost:8080
+```
+
+## Supported Services
+
+- Netflix
+- Spotify
+- Disney+
+- YouTube
+- Apple TV+
+- HBO Max
+- Paramount+
+- Amazon Prime Video (with caveats; see ARCHITECTURE.md)
 
 ## Deployment
 
 Designed for LAN-only deployment on home infrastructure, with an option to run behind a reverse proxy for broader access.
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for details.
+See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed deployment guides, including Docker, manual setup, scheduler configuration, and reverse-proxy examples.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-MIT
+MIT — See [LICENSE](LICENSE)
+
+## Future Work
+
+- Local DNS server mode (eliminate NextDNS dependency)
+- Per-profile usage tracking
+- Advanced analytics and trend detection
+- Mobile app (if needed beyond responsive web UI)
