@@ -15,9 +15,7 @@ const defaultDBPath = "/data/sverdrup.db"
 
 func main() {
 	dbPath := envOr("DB_PATH", defaultDBPath)
-	// DASHBOARD_PORT is the container's documented setting; PORT is the
-	// common convention, honored when DASHBOARD_PORT is unset.
-	port := envOr("DASHBOARD_PORT", envOr("PORT", "8080"))
+	port := envOr("DASHBOARD_PORT", "8080")
 
 	store, err := OpenStore(dbPath)
 	if err != nil {

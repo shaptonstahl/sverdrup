@@ -87,9 +87,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
-	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent) // no icon; keeps browsers from logging a 404
-	})
 	static, _ := fs.Sub(staticFS, "static")
 	files := http.StripPrefix("/static/", http.FileServerFS(static))
 	mux.Handle("GET /static/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -395,14 +392,15 @@ func (s *Server) handleAPIDevices(w http.ResponseWriter, r *http.Request) {
 }
 
 // render writes a full page, or only its fragment for an htmx request so
-// the swap replaces just that panel.
+// the swap replaces just that panel. An htmx history restore replaces the
+// whole body, so it gets the full page.
 func (s *Server) render(w http.ResponseWriter, r *http.Request, page, fragment string, data any) {
 	name := "layout.html"
-	if r.Header.Get("HX-Request") == "true" && fragment != "" {
+	if r.Header.Get("HX-Request") == "true" && r.Header.Get("HX-History-Restore-Request") != "true" && fragment != "" {
 		name = fragment
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Add("Vary", "HX-Request")
+	w.Header().Add("Vary", "HX-Request, HX-History-Restore-Request")
 	s.execute(w, http.StatusOK, page, name, data)
 }
 

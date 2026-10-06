@@ -290,7 +290,7 @@ Steps 3-7 recompute from every matched query on each run rather than appending, 
 
 **Inputs:**
 - SQLite `services`, `metrics`, `sessions`, `device_metrics` and `device_sessions` tables, read-only
-- `DB_PATH` (default `/data/sverdrup.db`), `DASHBOARD_PORT` (default 8080; `PORT` is used when it is unset) and `TZ`, which should match the processor's
+- `DB_PATH` (default `/data/sverdrup.db`), `DASHBOARD_PORT` (default 8080) and `TZ`, which should match the processor's
 
 **Outputs:**
 - HTTP/HTML responses (dashboard UI)

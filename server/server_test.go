@@ -102,6 +102,10 @@ func TestOverviewDeviceFilter(t *testing.T) {
 	}
 	wantContains(t, body, "phone:a", "40m")
 
+	restore := get(t, h, "/?device=home:phone:a", "HX-Request", "true", "HX-History-Restore-Request", "true")
+	wantStatus(t, restore, http.StatusOK)
+	wantContains(t, restore.Body.String(), "<!doctype html>", `<option value="home:phone:a" selected>`, `<section id="services-panel">`)
+
 	wantStatus(t, get(t, h, "/?device=nocolon"), http.StatusBadRequest)
 }
 
@@ -139,6 +143,10 @@ func TestServicePage(t *testing.T) {
 		t.Errorf("htmx history request got: %.120s", frag.Body)
 	}
 	wantContains(t, frag.Body.String(), `viewBox="0 0 360 40"`, "Wed 30 Sep 2026")
+
+	restore := get(t, h, "/services/1?days=90", "HX-Request", "true", "HX-History-Restore-Request", "true")
+	wantStatus(t, restore, http.StatusOK)
+	wantContains(t, restore.Body.String(), "<!doctype html>", "<h1>Netflix</h1>", `<section id="history-panel">`)
 
 	wantStatus(t, get(t, h, "/services/1?days=7"), http.StatusBadRequest)
 	wantStatus(t, get(t, h, "/services/99"), http.StatusNotFound)
