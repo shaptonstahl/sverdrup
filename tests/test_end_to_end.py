@@ -76,6 +76,11 @@ def test_logs_flow_through_to_metrics(nextdns, db_path):
             "SELECT profile_ids, device_names, session_length_minutes FROM sessions"
             " WHERE account = 'family'"
         ).fetchall()
+        device_slice = conn.execute(
+            "SELECT s.service_code, m.account, m.device_name, m.date, m.total_minutes"
+            " FROM device_metrics m JOIN services s ON s.id = m.service_id"
+            " ORDER BY m.date, m.account, m.device_name"
+        ).fetchall()
         queries = dict(
             conn.execute("SELECT profile_id, COUNT(*) FROM queries GROUP BY profile_id")
         )
@@ -136,4 +141,12 @@ def test_logs_flow_through_to_metrics(nextdns, db_path):
         ("youtube", "2026-03-02", 15.0, 0),
     ]
     assert queries == {"abc123": 13 + 4 + 18 + 4, "fam001": 3}
-    assert family_sessions == [('["fam001"]', '["unknown"]', 20.0)]
+    assert family_sessions == [('["fam001"]', '["unidentified"]', 20.0)]
+    # Device slice: the router-only family profile lands in "unidentified".
+    assert device_slice == [
+        ("netflix", "family", "unidentified", "2026-03-01", 20.0),
+        ("youtube", "home", "Phone", "2026-03-01", 15.0),
+        ("netflix", "home", "TV", "2026-03-01", 60.0),
+        ("youtube", "home", "Phone", "2026-03-02", 15.0),
+        ("netflix", "home", "TV", "2026-03-02", 45.0),
+    ]

@@ -79,7 +79,7 @@ def test_overlapping_windows_never_double_insert(conn, client, nextdns):
 
 def test_dedup_key_ignores_field_order_but_not_identity():
     def key(entry, profile=PROFILE_ID):
-        return entry_to_row(entry, "home", profile)[6]
+        return entry_to_row(entry, "home", profile)[8]
 
     a = log_entry("2026-03-01T10:00:00.000Z", "netflix.com")
     reordered = dict(reversed(list(a.items())))
@@ -170,12 +170,15 @@ def test_malformed_entries_are_skipped_and_values_sanitized(conn, client, nextdn
     assert (result.fetched, result.inserted, result.skipped) == (6, 3, 3)
     assert stored(conn) == [
         ("2026-03-01T10:00:00.000Z", "Living Room TV", "www.netflix.com"),
-        ("2026-03-01T10:01:00.000Z", "unknown", "spotify.com"),
-        ("2026-03-01T10:04:00.000Z", "unknown", "netflix.com"),
+        ("2026-03-01T10:01:00.000Z", "unidentified", "spotify.com"),
+        ("2026-03-01T10:04:00.000Z", "unidentified", "netflix.com"),
     ]
     assert conn.execute(
         "SELECT DISTINCT account, profile_id FROM queries"
     ).fetchall() == [("home", PROFILE_ID)]
+    assert conn.execute(
+        "SELECT device_id, device_model FROM queries ORDER BY timestamp"
+    ).fetchall() == [("living-room-tv", None), (None, None), (None, None)]
 
 
 @pytest.mark.parametrize(

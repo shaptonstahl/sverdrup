@@ -204,7 +204,7 @@ def test_metrics_accuracy(conn):
         ],
     )
 
-    assert process(conn) == (3, 2)
+    assert process(conn)[:2] == (3, 2)
 
     assert metrics_table(conn) == [
         ("netflix", "2026-03-01", 40.0, 2, "2026-03-01T21:10:00.000Z"),
@@ -240,7 +240,7 @@ def test_profile_switch_mid_session_is_one_session_with_per_profile_minutes(conn
             (utc(2026, 3, 1, 20, 20), "netflix.com", "tv", "f1", "family"),
         ],
     )
-    assert process(conn) == (2, 3)
+    assert process(conn)[:2] == (2, 3)
 
     sessions = conn.execute(
         "SELECT account, profile_ids, device_names, start_time, end_time,"
@@ -281,30 +281,91 @@ def test_profile_switch_mid_session_is_one_session_with_per_profile_minutes(conn
 
 
 def test_queries_without_a_device_sessionize_normally(conn):
-    # The collector stores a missing or unidentified device as "unknown".
+    # The collector stores a missing or unidentified device as "unidentified".
     insert_queries(
         conn,
-        [(utc(2026, 3, 1, 20, m), "netflix.com", "unknown") for m in (0, 10, 20)]
-        + [(utc(2026, 3, 1, 21, 0), "netflix.com", "unknown")],
+        [(utc(2026, 3, 1, 20, m), "netflix.com", "unidentified") for m in (0, 10, 20)]
+        + [(utc(2026, 3, 1, 21, 0), "netflix.com", "unidentified")],
     )
-    assert process(conn) == (2, 1)
+    assert process(conn)[:2] == (2, 1)
     assert sessions_table(conn) == [
         (
             "netflix",
-            '["unknown"]',
+            '["unidentified"]',
             "2026-03-01T20:00:00.000Z",
             "2026-03-01T20:20:00.000Z",
             20.0,
         ),
         (
             "netflix",
-            '["unknown"]',
+            '["unidentified"]',
             "2026-03-01T21:00:00.000Z",
             "2026-03-01T21:00:00.000Z",
             0.0,
         ),
     ]
     assert metrics_table(conn)[0][2:4] == (20.0, 2)
+
+
+def test_device_slice_with_consistent_labels(conn):
+    tv, phone = "Living Room TV", "Phone"
+    insert_queries(
+        conn,
+        [
+            # NextDNS runs on each client, so device labels are consistent
+            (utc(2026, 3, 1, 20, 0), "netflix.com", tv),
+            (utc(2026, 3, 1, 20, 10), "netflix.com", tv),
+            (utc(2026, 3, 1, 20, 20), "netflix.com", tv),
+            (utc(2026, 3, 1, 20, 5), "netflix.com", phone),
+            (utc(2026, 3, 1, 20, 15), "netflix.com", phone, "p2"),
+            (utc(2026, 3, 1, 20, 40), "netflix.com", phone),
+            (utc(2026, 3, 1, 21, 30), "netflix.com", "unidentified"),
+        ],
+    )
+
+    assert process(conn) == (3, 2, 4, 3)
+
+    device_sessions = conn.execute(
+        "SELECT device_name, profile_ids, start_time, end_time,"
+        " session_length_minutes FROM device_sessions ORDER BY start_time"
+    ).fetchall()
+    assert device_sessions == [
+        (tv, '["p1"]', "2026-03-01T20:00:00.000Z", "2026-03-01T20:20:00.000Z", 20.0),
+        (
+            phone,
+            '["p1", "p2"]',
+            "2026-03-01T20:05:00.000Z",
+            "2026-03-01T20:15:00.000Z",
+            10.0,
+        ),
+        (phone, '["p1"]', "2026-03-01T20:40:00.000Z", "2026-03-01T20:40:00.000Z", 0.0),
+        (
+            "unidentified",
+            '["p1"]',
+            "2026-03-01T21:30:00.000Z",
+            "2026-03-01T21:30:00.000Z",
+            0.0,
+        ),
+    ]
+    device_metrics = conn.execute(
+        "SELECT account, device_name, date, total_minutes, session_count, last_seen"
+        " FROM device_metrics ORDER BY device_name"
+    ).fetchall()
+    assert device_metrics == [
+        ("home", tv, "2026-03-01", 20.0, 1, "2026-03-01T20:20:00.000Z"),
+        ("home", phone, "2026-03-01", 10.0, 2, "2026-03-01T20:40:00.000Z"),
+        ("home", "unidentified", "2026-03-01", 0.0, 1, "2026-03-01T21:30:00.000Z"),
+    ]
+    # Household totals come from the account+service sessions (concurrent
+    # viewing merged), never from summing the device slice.
+    household = conn.execute(
+        "SELECT SUM(total_minutes), SUM(session_count) FROM metrics"
+    ).fetchone()
+    devices = conn.execute(
+        "SELECT SUM(total_minutes), SUM(session_count) FROM device_metrics"
+    ).fetchone()
+    assert household == (20.0, 3)
+    assert devices == (30.0, 4)
 
 
 def test_session_crossing_midnight_in_local_time(conn):

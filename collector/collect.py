@@ -61,6 +61,10 @@ _DOMAIN_RE = re.compile(r"^[a-z0-9_-]{1,63}(\.[a-z0-9_-]{1,63})*$")
 _ACCOUNT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 _PROFILE_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
+# device_name for queries NextDNS could not tie to a device; they stay in the
+# device slice as their own bucket rather than being dropped.
+UNIDENTIFIED_DEVICE = "unidentified"
+
 
 class ConfigError(Exception):
     """Configuration is missing or invalid; ``problems`` lists every issue."""
@@ -271,11 +275,11 @@ class NextDNSClient:
 
 def entry_to_row(
     entry: object, account: str, profile_id: str
-) -> tuple[str, str, str, str, str, str, str] | None:
+) -> tuple[str, str, str, str, str | None, str | None, str, str, str] | None:
     """Validate one log entry and return a queries row, or None if malformed.
 
-    The row is (account, profile_id, timestamp, device_name, domain_queried,
-    raw_json, dedup_key).
+    The row is (account, profile_id, timestamp, device_name, device_id,
+    device_model, domain_queried, raw_json, dedup_key).
     """
     if not isinstance(entry, dict):
         return None
@@ -291,22 +295,16 @@ def entry_to_row(
         return None
     device = entry.get("device")
     device = device if isinstance(device, dict) else {}
-    # Informational only: sessions ignore devices. NextDNS reports
-    # unidentified devices as __UNIDENTIFIED__.
-    device_name = "unknown"
-    for candidate in (device.get("name"), device.get("id")):
-        if (
-            isinstance(candidate, str)
-            and candidate.strip()
-            and candidate != "__UNIDENTIFIED__"
-        ):
-            device_name = candidate.strip()
-            break
+    device_id = _text(device.get("id"))
+    device_model = _text(device.get("model"))
+    if device_id == "__UNIDENTIFIED__":  # NextDNS's own unidentified marker
+        device_id = None
+    device_name = _text(device.get("name")) or device_id or UNIDENTIFIED_DEVICE
     identity = [
         profile_id,
         timestamp,
         domain,
-        device.get("id"),
+        device_id,
         device_name,
         entry.get("clientIp"),
         entry.get("protocol"),
@@ -314,7 +312,22 @@ def entry_to_row(
     ]
     dedup_key = hashlib.sha256(json.dumps(identity, default=str).encode()).hexdigest()
     raw_json = json.dumps(entry, sort_keys=True, separators=(",", ":"))
-    return account, profile_id, timestamp, device_name, domain, raw_json, dedup_key
+    return (
+        account,
+        profile_id,
+        timestamp,
+        device_name,
+        device_id,
+        device_model,
+        domain,
+        raw_json,
+        dedup_key,
+    )
+
+
+def _text(value: object) -> str | None:
+    """Return a stripped non-empty string, or None."""
+    return (value.strip() or None) if isinstance(value, str) else None
 
 
 @dataclass
@@ -372,8 +385,8 @@ def collect_profile(
             before = conn.total_changes
             conn.executemany(
                 "INSERT OR IGNORE INTO queries (account, profile_id, timestamp,"
-                " device_name, domain_queried, raw_json, dedup_key)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                " device_name, device_id, device_model, domain_queried, raw_json,"
+                " dedup_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 rows,
             )
             result.inserted += conn.total_changes - before

@@ -7,8 +7,11 @@ rebuilds the sessions and metrics tables from every matched query in one
 transaction. Sessions are per service within an account, ignoring profile and
 device: NextDNS often sees only the router, and clients switch profiles, so
 neither may split a session. Metrics are per service, profile and local day,
-so they sum across profiles. Rebuilding instead of appending makes re-runs safe: nothing is
-double-counted, and late-arriving queries land in the right session.
+so they sum across profiles. A device slice (device_sessions, device_metrics)
+is derived the same way per NextDNS device, for accounts where NextDNS runs on
+each client; it never feeds the household totals. Rebuilding instead of
+appending makes re-runs safe: nothing is double-counted, and late-arriving
+queries land in the right session.
 
 Environment variables:
   DB_PATH: SQLite database path (default: /data/sverdrup.db)
@@ -104,8 +107,30 @@ class Track(NamedTuple):
     account: str
 
 
-# (service_id, account, profile_id, local date): the grain of the metrics table.
+class DeviceTrack(NamedTuple):
+    """Queries that sessionize together in the device slice.
+
+    Meaningful only where NextDNS runs on each client, so device labels are
+    consistent; behind a router, most queries land in one device bucket.
+    """
+
+    service_id: int
+    account: str
+    device_name: str
+
+
+# (service_id, account, profile_id or device_name, local date): the grain of
+# the metrics and device_metrics tables.
 MetricKey = tuple[int, str, str, date]
+
+
+class RebuildResult(NamedTuple):
+    """Row counts written by one rebuild."""
+
+    sessions: int
+    metrics: int
+    device_sessions: int
+    device_metrics: int
 
 
 class Segment(NamedTuple):
@@ -124,7 +149,7 @@ class Session:
     between two queries belongs to the profile of the earlier query.
     """
 
-    track: Track
+    track: Track | DeviceTrack
     segments: tuple[Segment, ...]
     device_names: tuple[str, ...]
 
@@ -192,7 +217,7 @@ def classify(conn: sqlite3.Connection) -> int:
 
 
 def sessionize(
-    queries: Iterable[tuple[Track, str, str, datetime]], gap: timedelta
+    queries: Iterable[tuple[Track | DeviceTrack, str, str, datetime]], gap: timedelta
 ) -> Iterator[Session]:
     """Group (track, profile_id, device_name, time) rows into sessions.
 
@@ -201,7 +226,7 @@ def sessionize(
     exactly equal to ``gap`` continues the session. A profile change inside a
     session starts a new segment, not a new session.
     """
-    track: Track | None = None
+    track: Track | DeviceTrack | None = None
     segments: list[Segment] = []
     devices: set[str] = set()
     for row_track, profile_id, device_name, at in queries:
@@ -241,7 +266,7 @@ def daily_metrics(
     last_seen: Mapping[MetricKey, datetime],
     tz: tzinfo,
 ) -> dict[MetricKey, DailyMetric]:
-    """Aggregate sessions by service, account, profile and local date.
+    """Aggregate household sessions by service, account, profile and local date.
 
     Each segment's minutes go to its profile, split at local midnight; a
     session counts once, under the profile and on the day it starts.
@@ -249,7 +274,7 @@ def daily_metrics(
     """
     metrics: dict[MetricKey, DailyMetric] = {}
     for session in sessions:
-        service_id, account = session.track
+        service_id, account = session.track[:2]
         first = session.segments[0]
         key = (service_id, account, first.profile_id, first.start.astimezone(tz).date())
         metrics.setdefault(key, DailyMetric()).session_count += 1
@@ -262,32 +287,92 @@ def daily_metrics(
     return metrics
 
 
-def rebuild(conn: sqlite3.Connection, gap: timedelta, tz: tzinfo) -> tuple[int, int]:
-    """Recompute sessions and metrics from all matched queries, atomically.
+def device_daily_metrics(
+    sessions: Iterable[Session],
+    last_seen: Mapping[MetricKey, datetime],
+    tz: tzinfo,
+) -> dict[MetricKey, DailyMetric]:
+    """Aggregate device sessions by service, account, device and local date.
 
-    Returns (session count, metric row count).
+    Minutes are split at local midnight; a session counts on the day it starts.
+    """
+    metrics: dict[MetricKey, DailyMetric] = {}
+    for session in sessions:
+        start_day = session.start.astimezone(tz).date()
+        metrics.setdefault(
+            (*session.track, start_day), DailyMetric()
+        ).session_count += 1
+        for day, minutes in split_by_day(session.start, session.end, tz):
+            metrics.setdefault(
+                (*session.track, day), DailyMetric()
+            ).total_minutes += minutes
+    for key, at in last_seen.items():
+        metrics.setdefault(key, DailyMetric()).last_seen = at
+    return metrics
+
+
+def _matched(
+    conn: sqlite3.Connection,
+    by_device: bool,
+    tz: tzinfo,
+    last_seen: dict[MetricKey, datetime],
+) -> Iterator[tuple[Track | DeviceTrack, str, str, datetime]]:
+    """Stream matched queries in track order, recording last_seen per day.
+
+    Household tracks key last_seen by profile; device tracks by device.
+    """
+    order = "service_id, account, device_name" if by_device else "service_id, account"
+    for service_id, account, profile_id, device_name, ts in conn.execute(
+        "SELECT service_id, account, profile_id, device_name, timestamp"
+        f" FROM queries WHERE service_id IS NOT NULL ORDER BY {order}, timestamp, id"
+    ):
+        at = parse_timestamp(ts)
+        day = at.astimezone(tz).date()
+        if by_device:
+            track = DeviceTrack(service_id, account, device_name)
+            key = (service_id, account, device_name, day)
+        else:
+            track = Track(service_id, account)
+            key = (service_id, account, profile_id, day)
+        if key not in last_seen or at > last_seen[key]:
+            last_seen[key] = at
+        yield track, profile_id, device_name, at
+
+
+def _metric_rows(metrics: dict[MetricKey, DailyMetric]) -> list[tuple]:
+    return [
+        (
+            service_id,
+            account,
+            slice_value,
+            day.isoformat(),
+            round(m.total_minutes, 3),
+            m.session_count,
+            format_timestamp(m.last_seen),
+        )
+        for (service_id, account, slice_value, day), m in sorted(metrics.items())
+    ]
+
+
+def rebuild(conn: sqlite3.Connection, gap: timedelta, tz: tzinfo) -> RebuildResult:
+    """Recompute household and device sessions and metrics, atomically.
+
+    Household sessions (account + service) are the totals; the device slice
+    is derived separately and is never summed into them.
     """
     conn.execute("BEGIN IMMEDIATE")
     try:
         last_seen: dict[MetricKey, datetime] = {}
-
-        def matched() -> Iterator[tuple[Track, str, str, datetime]]:
-            for service_id, account, profile_id, device_name, ts in conn.execute(
-                "SELECT service_id, account, profile_id, device_name, timestamp"
-                " FROM queries WHERE service_id IS NOT NULL"
-                " ORDER BY service_id, account, timestamp, id"
-            ):
-                at = parse_timestamp(ts)
-                key = (service_id, account, profile_id, at.astimezone(tz).date())
-                if key not in last_seen or at > last_seen[key]:
-                    last_seen[key] = at
-                yield Track(service_id, account), profile_id, device_name, at
-
-        sessions = list(sessionize(matched(), gap))
+        sessions = list(sessionize(_matched(conn, False, tz, last_seen), gap))
         metrics = daily_metrics(sessions, last_seen, tz)
+        device_last_seen: dict[MetricKey, datetime] = {}
+        device_sessions = list(
+            sessionize(_matched(conn, True, tz, device_last_seen), gap)
+        )
+        device_metrics = device_daily_metrics(device_sessions, device_last_seen, tz)
 
-        conn.execute("DELETE FROM sessions")
-        conn.execute("DELETE FROM metrics")
+        for table in ("sessions", "metrics", "device_sessions", "device_metrics"):
+            conn.execute(f"DELETE FROM {table}")
         conn.executemany(
             "INSERT INTO sessions (service_id, account, profile_ids, device_names,"
             " start_time, end_time, session_length_minutes)"
@@ -307,25 +392,36 @@ def rebuild(conn: sqlite3.Connection, gap: timedelta, tz: tzinfo) -> tuple[int, 
         conn.executemany(
             "INSERT INTO metrics (service_id, account, profile_id, date,"
             " total_minutes, session_count, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            _metric_rows(metrics),
+        )
+        conn.executemany(
+            "INSERT INTO device_sessions (service_id, account, device_name,"
+            " profile_ids, start_time, end_time, session_length_minutes)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
             [
                 (
-                    service_id,
-                    account,
-                    profile_id,
-                    day.isoformat(),
-                    round(m.total_minutes, 3),
-                    m.session_count,
-                    format_timestamp(m.last_seen),
+                    *s.track,
+                    json.dumps(s.profile_ids),
+                    format_timestamp(s.start),
+                    format_timestamp(s.end),
+                    round(s.minutes, 3),
                 )
-                for (service_id, account, profile_id, day), m in sorted(metrics.items())
+                for s in device_sessions
             ],
+        )
+        conn.executemany(
+            "INSERT INTO device_metrics (service_id, account, device_name, date,"
+            " total_minutes, session_count, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            _metric_rows(device_metrics),
         )
         set_meta(conn, "last_process_at", format_timestamp(datetime.now(timezone.utc)))
         conn.commit()
     except BaseException:
         conn.rollback()
         raise
-    return len(sessions), len(metrics)
+    return RebuildResult(
+        len(sessions), len(metrics), len(device_sessions), len(device_metrics)
+    )
 
 
 def main(environ: Mapping[str, str] | None = None) -> int:
@@ -348,14 +444,14 @@ def main(environ: Mapping[str, str] | None = None) -> int:
         try:
             init_db(conn)
             tagged = classify(conn)
-            session_count, metric_count = rebuild(conn, config.gap, config.tz)
+            result = rebuild(conn, config.gap, config.tz)
         finally:
             conn.close()
     log.info(
-        "done: classified=%d sessions=%d metric_rows=%d",
+        "done: classified=%d sessions=%d metric_rows=%d"
+        " device_sessions=%d device_metric_rows=%d",
         tagged,
-        session_count,
-        metric_count,
+        *result,
     )
     return 0
 

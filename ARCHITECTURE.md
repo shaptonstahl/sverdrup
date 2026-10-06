@@ -44,10 +44,11 @@ graph LR
 ```
 
 **Data model:**
-- **Queries table:** account, profile_id, timestamp, device_name, domain_queried, raw_json (the full NextDNS event), plus dedup_key, processed and service_id for the pipeline
+- **Queries table:** account, profile_id, timestamp, device_name, device_id, device_model, domain_queried, raw_json (the full NextDNS event), plus dedup_key, processed and service_id for the pipeline
 - **Sessions table:** service_id, account, profile_ids, device_names, start_time, end_time, session_length_minutes (sessionized queries grouped by service within an account, and gaps; profile_ids and device_names list every profile and device the session touched)
 - **Services table:** service_code (netflix, spotify, etc.), service_name, domains (JSON list of DNS domains to match)
 - **Metrics table:** service_id, account, profile_id, date, total_minutes, session_count, last_seen (one row per service, profile and local day, so the per-profile breakdown stays queryable)
+- **Device sessions and device metrics tables:** the same derivations keyed by NextDNS device as well (service_id, account, device_name, ...), so time per service can be sliced by device. Household totals come from the sessions and metrics tables, never from summing these
 - **Metadata table:** key/value pairs such as per-profile `profile:<id>:latest_timestamp` and `backfill_completed_at`
 
 The schema lives in `sverdrup/db.py`, is created idempotently (`CREATE ... IF NOT EXISTS`) by whichever job runs first, and is shared by the collector and processor.
@@ -60,12 +61,16 @@ erDiagram
     services ||--o{ queries : "classifies"
     services ||--o{ sessions : "groups"
     services ||--o{ metrics : "aggregates"
+    services ||--o{ device_sessions : "groups by device"
+    services ||--o{ device_metrics : "aggregates by device"
     queries {
         int id PK
         text account
         text profile_id
         text timestamp "UTC, ms precision"
-        text device_name
+        text device_name "name, else ID, else unidentified"
+        text device_id
+        text device_model
         text domain_queried
         text raw_json
         text dedup_key UK
@@ -98,9 +103,29 @@ erDiagram
         int session_count
         text last_seen
     }
+    device_sessions {
+        int id PK
+        int service_id FK
+        text account
+        text device_name
+        text profile_ids "JSON array, profiles touched"
+        text start_time
+        text end_time
+        real session_length_minutes
+    }
+    device_metrics {
+        int id PK
+        int service_id FK
+        text account
+        text device_name
+        text date "local calendar day"
+        real total_minutes
+        int session_count
+        text last_seen
+    }
 ```
 
-**Figure.** Every stored DNS query keeps its account and profile, and sessions and daily metrics are derived from the queries that match a service.
+**Figure.** Every stored DNS query keeps its account, profile and device, and household and per-device sessions and daily metrics are both derived from the queries that match a service.
 
 Lifetime and cross-profile figures are not stored; they are aggregations of `metrics` (for example `SUM(total_minutes)`, `SUM(session_count)` and `MAX(last_seen)` grouped by service and date).
 
@@ -201,7 +226,7 @@ graph TB
 An API key belongs to a NextDNS account, and an account can own profiles you do not want; only the listed profiles are collected. Startup validation is strict and reports every problem at once, naming the variable: a missing key or profile list, an empty or duplicate profile ID (also across accounts), a bad account name, and the retired single-account variables `NEXTDNS_API_KEY`/`NEXTDNS_PROFILE_ID`. Messages never include a key.
 
 **Outputs:**
-- SQLite `queries` table: columns `id, account, profile_id, timestamp, device_name, domain_queried, raw_json, dedup_key` (the processor owns `processed` and `service_id`)
+- SQLite `queries` table: columns `id, account, profile_id, timestamp, device_name, device_id, device_model, domain_queried, raw_json, dedup_key` (the processor owns `processed` and `service_id`)
 
 **Algorithm (per listed profile):**
 1. If the profile has no stored rows: backfill all available logs (up to the retention window)
@@ -228,6 +253,7 @@ An API key belongs to a NextDNS account, and an account can own profiles you do 
 **Outputs:**
 - SQLite `sessions` table: columns `id, service_id, account, profile_ids, device_names, start_time, end_time, session_length_minutes`
 - SQLite `metrics` table: columns `id, service_id, account, profile_id, date, total_minutes, session_count, last_seen`
+- SQLite `device_sessions` and `device_metrics` tables: the device slice, keyed by `service_id, account, device_name`
 
 **Configuration:** `SESSION_GAP_MINUTES` (default 15) and `TZ` (IANA zone that defines calendar days; default UTC).
 
@@ -237,9 +263,10 @@ An API key belongs to a NextDNS account, and an account can own profiles you do 
 3. Group consecutive matched queries (same service, same account, any profile, any device) into sessions, using the gap threshold: a gap longer than the threshold starts a new session; a gap exactly equal to it does not. Profile and device never split a session: NextDNS is usually set up at the router, so the logged device is unreliable, and profiles are many-to-many with clients (a client can move onto a VPN profile mid-viewing). Each session records every profile and device it touched
 4. Calculate session length in minutes (last query minus first query)
 5. Aggregate by service, profile and local day: sum total_minutes, count sessions, take the latest matched query as last_seen. Within a session, the time between two queries belongs to the profile of the earlier query, and the session counts once, under the profile it started in
-6. Replace the `sessions` and `metrics` tables with the result in one transaction; exit
+6. Device slice: repeat steps 3-5 per account, service and NextDNS device (sessions split by device, minutes per device and local day). Queries without a device go to an explicit `unidentified` bucket rather than being dropped
+7. Replace the `sessions`, `metrics`, `device_sessions` and `device_metrics` tables with the result in one transaction; exit
 
-Steps 3-6 recompute from every matched query on each run rather than appending, so re-running never double-counts and late-arriving queries join the right session.
+Steps 3-7 recompute from every matched query on each run rather than appending, so re-running never double-counts and late-arriving queries join the right session.
 
 **Domain mappings** (the seed list in `sverdrup/services.py`; a domain also matches all of its subdomains, on whole labels, and the most specific domain wins):
 - Netflix: `netflix.com`, `netflix.net`, `nflxvideo.net`, `nflximg.net`, `nflxext.com`, `nflxso.net`
@@ -377,7 +404,7 @@ Run the Python suite with one command from the repository root: `python3 -m pyte
 4. **Cost calculation:** If you enter subscription prices, cost-per-hour is a rough estimate (doesn't account for price changes, trial periods, or shared accounts).
 5. **Data retention:** Depends on local storage. Recommend at least 2 years on any NAS or storage device running the container.
 6. **Session length from DNS:** A session lasts from its first to its last matched query, so a lone query is a zero-minute session, and viewing after the last DNS lookup is not counted. DNS caching makes this an undercount.
-7. **Device identity is not used:** The NextDNS logs API reports `device.id` (scoped to a profile), `device.name` and `device.model`, but with NextDNS set up at the router most queries carry the router or no device at all. The collector stores the device name (falling back to its ID, then `unknown` for a missing or `__UNIDENTIFIED__` device) for reference only; sessions ignore it.
+7. **Device slicing is meaningful only where NextDNS runs on each client:** The NextDNS logs API reports `device.id` (scoped to a profile), `device.name` and `device.model`. With NextDNS set up at the router, most queries carry the router or no device at all, so household sessions ignore devices. The device slice (`device_sessions`, `device_metrics`) uses the device name, falling back to its ID, then `unidentified` for a missing or `__UNIDENTIFIED__` device. It is reliable only for accounts where NextDNS runs on each client, so labels are consistent. Two devices sharing a name are one device there, and a device without a name has a per-profile ID, so a profile switch splits its device session. Device figures can sum to more than the household figures, because concurrent viewing counts once per device.
 
 ## Implementation Decisions
 
@@ -390,5 +417,6 @@ Choices made where the design above was silent, recorded so they can be revisite
 - **Midnight:** a session's minutes are split at local midnight (per `TZ`, DST-aware); the session counts once, on the day it starts. Summing `total_minutes` and `session_count` over all metric rows therefore equals the sessions table's totals.
 - **Metrics grain:** one row per service, profile and local day. Lifetime and cross-profile figures are aggregations, not stored rows.
 - **Sessions per account and service:** a session ignores profile and device. Its time between consecutive queries is attributed to the earlier query's profile, and it counts once, under the profile it started in; the sessions table records the profiles and devices it touched as JSON arrays. When two clients in different profiles watch at once, the per-profile split follows whichever profile queried last, while the total stays the session's wall-clock length.
+- **Device slice:** derived alongside the household figures from the same queries, keyed by account, service and device name, with no per-profile split (`profile_ids` records the profiles a device session touched). Household totals never come from summing it.
 - **NextDNS query defaults:** the collector does not pass `raw`, so it stores NextDNS's default view (navigational queries, deduplicated by NextDNS).
 - **Scheduling:** an interval under 60 minutes runs every N minutes; 60 or more runs on the hour every N/60 hours.
