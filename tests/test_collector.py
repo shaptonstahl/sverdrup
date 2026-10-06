@@ -12,13 +12,13 @@ from collector.collect import (
     entry_to_row,
 )
 from sverdrup.db import get_meta
-from tests.nextdns_mock import API_KEY, PROFILE_ID, log_entry
+from tests.nextdns_mock import API_KEY, PROFILE_ID, log_entry, utc
 
 META = f"profile:{PROFILE_ID}:"
 
 
-def collect(conn, client):
-    return collect_profile(conn, client, "home", PROFILE_ID)
+def collect(conn, client, **kwargs):
+    return collect_profile(conn, client, "home", PROFILE_ID, **kwargs)
 
 
 def stored(conn):
@@ -111,9 +111,13 @@ def test_interrupted_backfill_resumes_without_gaps(conn, nextdns, sleeps):
     assert get_meta(conn, META + "backfill_completed_at") is None
 
     client.iter_pages = pages
-    result = collect(conn, client)
+    result = collect(conn, client, now=lambda: utc(2026, 3, 2))
     assert result.mode == "incremental"
     assert len(stored(conn)) == 30
+    assert get_meta(conn, META + "backfill_completed_at") == "2026-03-02T00:00:00.000Z"
+
+    collect(conn, client, now=lambda: utc(2026, 3, 3))
+    assert get_meta(conn, META + "backfill_completed_at") == "2026-03-02T00:00:00.000Z"
 
 
 def test_rate_limit_backs_off_then_succeeds(conn, client, nextdns, sleeps):

@@ -323,7 +323,7 @@ NEXTDNS_FAMILY_API_KEY=<key>                 # one key and one profile list per 
 NEXTDNS_FAMILY_PROFILES=<id3>
 NEXTDNS_API_URL=https://api.nextdns.io      # NextDNS API endpoint
 COLLECTOR_INTERVAL=15                        # minutes between collection runs
-PROCESSOR_INTERVAL=60                        # minutes between processing runs (60 or more: whole hours)
+PROCESSOR_INTERVAL=60                        # minutes between processing runs (see Scheduling below)
 SESSION_GAP_MINUTES=15                       # gap that ends a viewing session
 TZ=UTC                                       # IANA time zone that defines a metrics day
 DASHBOARD_PORT=8080                          # port for Go server
@@ -419,4 +419,4 @@ Choices made where the design above was silent, recorded so they can be revisite
 - **Sessions per account and service:** a session ignores profile and device. Its time between consecutive queries is attributed to the earlier query's profile, and it counts once, under the profile it started in; the sessions table records the profiles and devices it touched as JSON arrays. When two clients in different profiles watch at once, the per-profile split follows whichever profile queried last, while the total stays the session's wall-clock length.
 - **Device slice:** derived alongside the household figures from the same queries, keyed by account, service and device name, with no per-profile split (`profile_ids` records the profiles a device session touched). Household totals never come from summing it.
 - **NextDNS query defaults:** the collector does not pass `raw`, so it stores NextDNS's default view (navigational queries, deduplicated by NextDNS).
-- **Scheduling:** an interval under 60 minutes runs every N minutes; 60 or more runs on the hour every N/60 hours.
+- **Scheduling:** an interval under 60 minutes runs every N minutes and must divide 60; 60 or more runs on the hour every N/60 hours and must be a whole number of hours that divides 24. The entrypoint refuses to start, naming the variable, on any other value, because cron would silently run it at uneven gaps.

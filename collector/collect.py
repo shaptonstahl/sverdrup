@@ -41,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sverdrup.db import (  # noqa: E402
     connect,
     format_timestamp,
+    get_meta,
     init_db,
     parse_timestamp,
     set_meta,
@@ -401,7 +402,7 @@ def collect_profile(
     with conn:
         stamp = format_timestamp(now())
         set_meta(conn, meta + "last_collect_at", stamp)
-        if result.mode == "backfill":
+        if get_meta(conn, meta + "backfill_completed_at") is None:
             set_meta(conn, meta + "backfill_completed_at", stamp)
     return result
 

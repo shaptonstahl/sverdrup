@@ -20,7 +20,8 @@ echo "  DASHBOARD_PORT: ${DASHBOARD_PORT}"
 echo "  DB_PATH: ${DB_PATH}"
 
 # Turn an interval in minutes into a cron schedule: under an hour runs every
-# N minutes; an hour or more runs on the hour every N/60 hours.
+# N minutes and N must divide 60; an hour or more runs on the hour and must be
+# a whole number of hours that divides 24. Anything else cron cannot run evenly.
 cron_schedule() {
     case "$2" in
         '' | *[!0-9]*)
@@ -31,8 +32,16 @@ cron_schedule() {
     if [ "$2" -lt 1 ]; then
         echo "Sverdrup: $1 must be at least 1" >&2
         exit 1
+    elif [ "$2" -lt 60 ] && [ $((60 % $2)) -ne 0 ]; then
+        echo "Sverdrup: $1 under 60 must divide 60 (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30), got $2" >&2
+        exit 1
+    elif [ "$2" -ge 60 ] && { [ $(($2 % 60)) -ne 0 ] || [ $((24 % ($2 / 60))) -ne 0 ]; }; then
+        echo "Sverdrup: $1 of 60 or more must be a whole number of hours dividing 24 (60, 120, 180, 240, 360, 480, 720, 1440), got $2" >&2
+        exit 1
     elif [ "$2" -lt 60 ]; then
         echo "*/$2 * * * *"
+    elif [ "$2" -eq 1440 ]; then
+        echo "0 0 * * *"
     else
         echo "0 */$(($2 / 60)) * * *"
     fi

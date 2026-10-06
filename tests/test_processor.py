@@ -123,7 +123,10 @@ def test_split_by_day_at_utc_midnight():
     parts = list(
         split_by_day(utc(2026, 3, 1, 23, 50), utc(2026, 3, 2, 0, 20), timezone.utc)
     )
-    assert parts == [(date(2026, 3, 1), 10), (date(2026, 3, 2), 20)]
+    assert parts == [
+        (date(2026, 3, 1), 10, utc(2026, 3, 2)),
+        (date(2026, 3, 2), 20, utc(2026, 3, 2, 0, 20)),
+    ]
 
 
 def test_split_by_day_uses_local_midnight_and_dst():
@@ -131,7 +134,7 @@ def test_split_by_day_uses_local_midnight_and_dst():
     start = utc(2026, 3, 8, 4, 30)  # 23:30 EST on 03-07
     end = utc(2026, 3, 9, 4, 30)  # 00:30 EDT on 03-09
     parts = list(split_by_day(start, end, NEW_YORK))
-    assert parts == [
+    assert [(day, minutes) for day, minutes, _ in parts] == [
         (date(2026, 3, 7), 30),
         (date(2026, 3, 8), 23 * 60),
         (date(2026, 3, 9), 30),
@@ -366,6 +369,50 @@ def test_device_slice_with_consistent_labels(conn):
     ).fetchone()
     assert household == (20.0, 3)
     assert devices == (30.0, 4)
+
+
+def test_profile_switch_across_midnight_has_last_seen(conn):
+    # P's segment runs 23:55-00:05, so P gets minutes on 03-02 with no query
+    # there; last_seen falls back to the end of those minutes.
+    insert_queries(
+        conn,
+        [
+            (utc(2026, 3, 1, 23, 55), "netflix.com", "tv", "p1"),
+            (utc(2026, 3, 2, 0, 5), "netflix.com", "tv", "p2"),
+        ],
+    )
+
+    process(conn)
+
+    assert conn.execute(
+        "SELECT profile_id, date, total_minutes, session_count, last_seen"
+        " FROM metrics ORDER BY date, profile_id"
+    ).fetchall() == [
+        ("p1", "2026-03-01", 5.0, 1, "2026-03-01T23:55:00.000Z"),
+        ("p1", "2026-03-02", 5.0, 0, "2026-03-02T00:05:00.000Z"),
+        ("p2", "2026-03-02", 0.0, 0, "2026-03-02T00:05:00.000Z"),
+    ]
+
+
+def test_device_day_without_queries_has_last_seen(conn):
+    insert_queries(
+        conn,
+        [
+            (utc(2026, 3, 1, 23, 0), "netflix.com", "tv"),
+            (utc(2026, 3, 3, 1, 0), "netflix.com", "tv"),
+        ],
+    )
+
+    process(conn, gap=timedelta(days=2))
+
+    assert conn.execute(
+        "SELECT date, total_minutes, session_count, last_seen"
+        " FROM device_metrics ORDER BY date"
+    ).fetchall() == [
+        ("2026-03-01", 60.0, 1, "2026-03-01T23:00:00.000Z"),
+        ("2026-03-02", 24 * 60.0, 0, "2026-03-03T00:00:00.000Z"),
+        ("2026-03-03", 60.0, 0, "2026-03-03T01:00:00.000Z"),
+    ]
 
 
 def test_session_crossing_midnight_in_local_time(conn):

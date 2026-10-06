@@ -250,15 +250,34 @@ def sessionize(
 
 def split_by_day(
     start: datetime, end: datetime, tz: tzinfo
-) -> Iterator[tuple[date, float]]:
-    """Yield (local date, minutes) for each local calendar day [start, end) covers."""
+) -> Iterator[tuple[date, float, datetime]]:
+    """Yield (local date, minutes, piece end) for each local day [start, end) covers."""
     cursor = start
     while cursor < end:
         day = cursor.astimezone(tz).date()
         next_midnight = datetime.combine(day + timedelta(days=1), time(0), tzinfo=tz)
         segment_end = min(end, next_midnight.astimezone(timezone.utc))
-        yield day, (segment_end - cursor).total_seconds() / 60
+        yield day, (segment_end - cursor).total_seconds() / 60, segment_end
         cursor = segment_end
+
+
+def _credit(
+    metrics: dict[MetricKey, DailyMetric],
+    prefix: tuple,
+    start: datetime,
+    end: datetime,
+    tz: tzinfo,
+) -> None:
+    """Add [start, end) to prefix's metric on each local day it covers.
+
+    last_seen starts at the latest credited end, so a day with minutes but no
+    matched query (a segment crossing midnight) still has one.
+    """
+    for day, minutes, until in split_by_day(start, end, tz):
+        metric = metrics.setdefault((*prefix, day), DailyMetric())
+        metric.total_minutes += minutes
+        if metric.last_seen is None or until > metric.last_seen:
+            metric.last_seen = until
 
 
 def daily_metrics(
@@ -270,7 +289,8 @@ def daily_metrics(
 
     Each segment's minutes go to its profile, split at local midnight; a
     session counts once, under the profile and on the day it starts.
-    ``last_seen`` maps each key to the latest matched query.
+    ``last_seen`` maps each key to the latest matched query; a key with none
+    keeps the end of its latest credited minutes.
     """
     metrics: dict[MetricKey, DailyMetric] = {}
     for session in sessions:
@@ -279,9 +299,13 @@ def daily_metrics(
         key = (service_id, account, first.profile_id, first.start.astimezone(tz).date())
         metrics.setdefault(key, DailyMetric()).session_count += 1
         for segment in session.segments:
-            for day, minutes in split_by_day(segment.start, segment.end, tz):
-                key = (service_id, account, segment.profile_id, day)
-                metrics.setdefault(key, DailyMetric()).total_minutes += minutes
+            _credit(
+                metrics,
+                (service_id, account, segment.profile_id),
+                segment.start,
+                segment.end,
+                tz,
+            )
     for key, at in last_seen.items():
         metrics.setdefault(key, DailyMetric()).last_seen = at
     return metrics
@@ -302,10 +326,7 @@ def device_daily_metrics(
         metrics.setdefault(
             (*session.track, start_day), DailyMetric()
         ).session_count += 1
-        for day, minutes in split_by_day(session.start, session.end, tz):
-            metrics.setdefault(
-                (*session.track, day), DailyMetric()
-            ).total_minutes += minutes
+        _credit(metrics, session.track, session.start, session.end, tz)
     for key, at in last_seen.items():
         metrics.setdefault(key, DailyMetric()).last_seen = at
     return metrics
