@@ -82,6 +82,5 @@ MIT — See [LICENSE](LICENSE)
 ## Future Work
 
 - Local DNS server mode (eliminate NextDNS dependency)
-- Per-profile usage tracking
 - Advanced analytics and trend detection
 - Mobile app (if needed beyond responsive web UI)

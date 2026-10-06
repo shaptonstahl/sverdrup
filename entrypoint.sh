@@ -6,10 +6,10 @@
 set -e
 
 # Set defaults
-export COLLECTOR_INTERVAL=${COLLECTOR_INTERVAL:-15}
-export PROCESSOR_INTERVAL=${PROCESSOR_INTERVAL:-60}
-export DASHBOARD_PORT=${DASHBOARD_PORT:-8080}
-export DB_PATH=${DB_PATH:-/data/sverdrup.db}
+export COLLECTOR_INTERVAL="${COLLECTOR_INTERVAL:-15}"
+export PROCESSOR_INTERVAL="${PROCESSOR_INTERVAL:-60}"
+export DASHBOARD_PORT="${DASHBOARD_PORT:-8080}"
+export DB_PATH="${DB_PATH:-/data/sverdrup.db}"
 
 echo "Sverdrup: Starting container"
 echo "  NEXTDNS_API_URL: ${NEXTDNS_API_URL:-https://api.nextdns.io}"

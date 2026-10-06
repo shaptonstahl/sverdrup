@@ -49,7 +49,7 @@ graph LR
 - **Services table:** service_code (netflix, spotify, etc.), service_name, domains (JSON list of DNS domains to match)
 - **Metrics table:** service_id, account, profile_id, date, total_minutes, session_count, last_seen (one row per service, profile and local day, so the per-profile breakdown stays queryable)
 - **Device sessions and device metrics tables:** the same derivations keyed by NextDNS device as well (service_id, account, device_name, ...), so time per service can be sliced by device. Household totals come from the sessions and metrics tables, never from summing these
-- **Metadata table:** key/value pairs such as per-profile `profile:<id>:latest_timestamp` and `backfill_completed_at`
+- **Metadata table:** key/value pairs such as per-profile `profile:<id>:latest_timestamp` and `profile:<id>:backfill_completed_at`
 
 The schema lives in `sverdrup/db.py`, is created idempotently (`CREATE ... IF NOT EXISTS`) by whichever job runs first, and is shared by the collector and processor.
 
@@ -233,7 +233,7 @@ An API key belongs to a NextDNS account, and an account can own profiles you do 
 2. Otherwise: poll from the profile's last stored timestamp, minus a 10-minute overlap so late-arriving entries are not missed
 3. Request pages oldest-first (`sort=asc`, `limit=1000`), following the pagination cursor
 4. Insert each page with `INSERT OR IGNORE` on a unique `dedup_key` and commit it, then update the profile's earliest/latest timestamps in metadata
-5. After a full backfill, record `backfill_completed_at`; exit (memory released)
+5. When a run reaches the last page, record the profile's `backfill_completed_at` if it is unset (so a backfill that was interrupted and finished by a later incremental run still counts as complete); exit (memory released)
 
 **Error handling:**
 - API rate limits: exponential backoff on HTTP 429 and 5xx (2s, 4s, 8s, ... capped at 300s, `Retry-After` honored), up to 6 retries
@@ -262,7 +262,7 @@ An API key belongs to a NextDNS account, and an account can own profiles you do 
 2. For each query, match domain to a streaming service using a domain-to-service mapping; store the match and mark the query processed. If the services table has changed since the last run, reclassify every query
 3. Group consecutive matched queries (same service, same account, any profile, any device) into sessions, using the gap threshold: a gap longer than the threshold starts a new session; a gap exactly equal to it does not. Profile and device never split a session: NextDNS is usually set up at the router, so the logged device is unreliable, and profiles are many-to-many with clients (a client can move onto a VPN profile mid-viewing). Each session records every profile and device it touched
 4. Calculate session length in minutes (last query minus first query)
-5. Aggregate by service, profile and local day: sum total_minutes, count sessions, take the latest matched query as last_seen. Within a session, the time between two queries belongs to the profile of the earlier query, and the session counts once, under the profile it started in
+5. Aggregate by service, profile and local day: sum total_minutes, count sessions, take the latest matched query as last_seen (or, for a day that has minutes but no matched query, such as a profile segment crossing midnight, the end of the latest minutes credited that day). Within a session, the time between two queries belongs to the profile of the earlier query, and the session counts once, under the profile it started in
 6. Device slice: repeat steps 3-5 per account, service and NextDNS device (sessions split by device, minutes per device and local day). Queries without a device go to an explicit `unidentified` bucket rather than being dropped
 7. Replace the `sessions`, `metrics`, `device_sessions` and `device_metrics` tables with the result in one transaction; exit
 
