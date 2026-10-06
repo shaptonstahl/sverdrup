@@ -1,8 +1,11 @@
 # Multi-stage build: compile Go server
-FROM golang:1.21-alpine AS go-builder
+FROM golang:1.26-alpine AS go-builder
 WORKDIR /build
+COPY server/go.mod server/go.sum ./
+RUN go mod download
 COPY server/ ./
-RUN go build -o sverdrup-server main.go
+# The SQLite driver is pure Go, so the binary needs no C toolchain or libc.
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o sverdrup-server .
 
 # Runtime image
 FROM alpine:3.18

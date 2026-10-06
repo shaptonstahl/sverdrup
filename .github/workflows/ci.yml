@@ -26,6 +26,25 @@ jobs:
       - name: Run tests against the mock NextDNS API
         run: python -m pytest
 
+  go:
+    name: Go dashboard (vet, fmt, tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: go vet
+        run: go vet ./...
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - name: go test
+        run: go test ./...
+
   docker:
     name: Docker build
     runs-on: ubuntu-latest

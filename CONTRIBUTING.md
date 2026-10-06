@@ -22,6 +22,8 @@ Thank you for your interest in contributing to Sverdrup!
 
 ### Go
 - `go fmt` and `go vet` pass without warnings
+- Templates and static files (including the vendored htmx) are embedded in the binary; there is no Node/npm build step
+- The Go tests build their fixture database from `server/testdata/schema.sql`, a copy of the schema in `sverdrup/db.py`; a Python test fails when the two differ, so update both together
 - Clear, idiomatic Go style
 - Tests: Go's `testing` package
 - Aim for >80% coverage on new code
@@ -52,7 +54,7 @@ python3 -m pytest
 cd server && go test ./...
 ```
 
-CI (`.github/workflows/ci.yml`) runs the Python suite on Python 3.11 and 3.12 and builds the Docker image for every pull request and every push to `main`.
+CI (`.github/workflows/ci.yml`) runs the Python suite on Python 3.11 and 3.12, runs `go vet`, `gofmt` and the Go tests, and builds the Docker image for every pull request and every push to `main`.
 
 ## Reporting Issues
 

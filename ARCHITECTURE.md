@@ -289,23 +289,50 @@ Steps 3-7 recompute from every matched query on each run rather than appending, 
 **Runtime:** Always-on container process; listens on port 8080 (configurable)
 
 **Inputs:**
-- SQLite `metrics` and `sessions` tables (read-only)
+- SQLite `services`, `metrics`, `sessions`, `device_metrics` and `device_sessions` tables, read-only
+- `DB_PATH` (default `/data/sverdrup.db`), `DASHBOARD_PORT` (default 8080; `PORT` is used when it is unset) and `TZ`, which should match the processor's
 
 **Outputs:**
 - HTTP/HTML responses (dashboard UI)
 - JSON API endpoints for metric queries
 
 **Key features:**
-- **Home page:** Summary of services and time spent this week/month
-- **Service detail page:** Time per day (sparkline + table), median days between use, cost per hour (if subscription cost entered)
-- **Session history:** Recent viewing sessions with times and durations
-- **Mobile responsive:** Works on phone browser without zoom
-- **API endpoints** (JSON):
-  - `GET /api/services` — list all services with summary stats
-  - `GET /api/services/:id/metrics?start=DATE&end=DATE` — time series for a service
-  - `GET /api/sessions?service=:id&limit=50` — recent sessions
+- **Home page (`/`):** Household time and sessions this week and this month, each service's time this week, this month and all time, and a per-device table. A device selector (`?device=account:device_name`) re-scopes the summary to one NextDNS device; htmx swaps just that panel
+- **Service detail page (`/services/{id}`):** Time per day for the last 30, 90 or 365 days (sparkline + table), median days between use, a per-device table and the 50 most recent sessions. Cost per hour is not built yet: nothing stores subscription prices
+- **Session history:** Recent viewing sessions with start and end times (shown in the server's `TZ`), duration, devices and profiles
+- **Mobile responsive:** Works on phone browser without zoom; less important columns hide on narrow screens
+- **API endpoints** (JSON; errors are `{"error": "..."}` with status 400, 404 or 503):
+  - `GET /api/services[?device=account:device_name]` — every service with total, this-week and this-month minutes and sessions, active days, first and last date and last seen, plus the period's `today`, `week_start` and `month_start`
+  - `GET /api/services/{id}/metrics?start=YYYY-MM-DD&end=YYYY-MM-DD[&device=...]` — one entry per day, zeros included; `end` defaults to today and `start` to 29 days before `end`, and a range is at most 3660 days
+  - `GET /api/sessions?service={id}&limit=50` — the latest sessions, newest first; `service` is optional (all services when omitted), `limit` is 1-500 and defaults to 50
+  - `GET /api/devices` — every NextDNS device with its totals, keyed `account:device_name`
+  - `GET /health` — liveness, without touching the database
 
 **Framework:** Go's `net/http` + htmx for interactivity (no build step required)
+
+```mermaid
+---
+title: Re-scoping the overview to one device
+---
+sequenceDiagram
+    participant P as Household member [person]
+    participant B as Browser with htmx [channel]
+    participant S as Dashboard server [process]
+    participant D as SQLite, read-only [store]
+    P->>B: open /
+    B->>S: GET /
+    S->>D: services with metrics, devices with device_metrics
+    S-->>B: full page, household totals
+    P->>B: pick a device in Show
+    rect rgb(252,241,217)
+    B->>S: GET /?device=account:name with HX-Request
+    S->>D: services with that device's device_metrics
+    S-->>B: services panel only
+    end
+    B-->>P: panel swapped, URL updated for back and bookmarks
+```
+
+**Figure.** Choosing a device replaces only the summary panel with that device's figures, and the URL keeps the choice, so the same view loads without JavaScript.
 
 **Session replay (future):** Can optionally store and replay "last session" times per device to infer what was watched
 
@@ -387,7 +414,8 @@ Run the Python suite with one command from the repository root: `python3 -m pyte
 - Edge cases: midnight boundaries, device name changes
 
 ### Dashboard Tests (Go)
-- Integration tests for API endpoints
+- Run with `cd server && go test ./...`, offline. They build a fixture database from `server/testdata/schema.sql`, a copy of the pipeline schema that `tests/test_server_schema.py` keeps identical to `sverdrup/db.py`
+- Integration tests for every page and API endpoint, including htmx fragments, input validation, escaping, the read-only connection and the no-database case
 - UI tests (Selenium or similar) for responsive layout and mobile rendering
 - Load tests with large datasets (1000+ sessions)
 
@@ -419,4 +447,7 @@ Choices made where the design above was silent, recorded so they can be revisite
 - **Sessions per account and service:** a session ignores profile and device. Its time between consecutive queries is attributed to the earlier query's profile, and it counts once, under the profile it started in; the sessions table records the profiles and devices it touched as JSON arrays. When two clients in different profiles watch at once, the per-profile split follows whichever profile queried last, while the total stays the session's wall-clock length.
 - **Device slice:** derived alongside the household figures from the same queries, keyed by account, service and device name, with no per-profile split (`profile_ids` records the profiles a device session touched). Household totals never come from summing it.
 - **NextDNS query defaults:** the collector does not pass `raw`, so it stores NextDNS's default view (navigational queries, deduplicated by NextDNS).
+- **Dashboard reads only:** the server opens SQLite with `mode=ro` and `query_only`, so it can neither write nor create the database. Until the collector creates it, pages and the API answer 503 "no data yet". It uses the pure-Go `modernc.org/sqlite` driver, so the image needs no C toolchain
+- **Dashboard periods:** "this week" runs from Monday and "this month" from the 1st, both through today in the dashboard's `TZ`. Device views read `device_metrics` and household views `metrics`, never a sum of devices
+- **Dashboard assets:** htmx (2.0.11) is vendored in `server/static` and embedded with the templates and stylesheet, so the page loads nothing from the internet and the Content-Security-Policy allows only same-origin scripts and styles. API minutes are rounded to a thousandth of a minute
 - **Scheduling:** an interval under 60 minutes runs every N minutes and must divide 60; 60 or more runs on the hour every N/60 hours and must be a whole number of hours that divides 24. The entrypoint refuses to start, naming the variable, on any other value, because cron would silently run it at uneven gaps.
