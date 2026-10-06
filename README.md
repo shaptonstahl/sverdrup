@@ -2,7 +2,7 @@
 
 Measure and analyze home use of streaming services.
 
-**Status:** Architecture and design phase. Implementation to follow.
+**Status:** The data pipeline (collector, processor, SQLite schema) is built and tested; the dashboard is next.
 
 ## Purpose
 
@@ -19,7 +19,7 @@ This data feeds retention decisions: which subscriptions are genuinely used, and
 
 Sverdrup is a containerized system with three components:
 
-1. **Collector** (Python) — Fetches DNS logs from NextDNS, backfills historical data on first run, then polls incrementally
+1. **Collector** (Python) — Fetches DNS logs from the chosen profiles of one or more NextDNS accounts, backfills historical data on first run, then polls incrementally
 2. **Processor** (Python) — Sessionizes DNS queries into viewing sessions and computes metrics
 3. **Dashboard** (Go + htmx) — Lightweight web UI, mobile-friendly, shows time-per-service and usage frequency
 
@@ -32,9 +32,8 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed setup instructions.
 **Minimal example (Docker Compose):**
 
 ```bash
-# Create .env with your NextDNS credentials
-echo "NEXTDNS_API_KEY=your_key" > .env
-echo "NEXTDNS_PROFILE_ID=your_profile" >> .env
+# Create .env with your NextDNS accounts, keys and profiles
+cp .env.example .env   # then edit
 
 # Start the container
 docker-compose up -d
@@ -58,6 +57,15 @@ docker-compose up -d
 Designed for LAN-only deployment on home infrastructure, with an option to run behind a reverse proxy for broader access.
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed deployment guides, including Docker, manual setup, scheduler configuration, and reverse-proxy examples.
+
+## Testing
+
+```bash
+pip install -r requirements-dev.txt
+python3 -m pytest
+```
+
+The suite runs offline against a mock NextDNS API.
 
 ## Contributing
 

@@ -1,0 +1,3 @@
+# Test and formatting tools; the collector and processor use only the standard library.
+pytest>=7.0
+black>=24.0

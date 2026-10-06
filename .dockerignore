@@ -17,3 +17,7 @@ __pycache__
 .pytest_cache
 build
 dist
+tests
+pytest.ini
+requirements-dev.txt
+.env.example
