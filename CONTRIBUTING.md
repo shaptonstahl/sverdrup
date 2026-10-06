@@ -35,7 +35,7 @@ Thank you for your interest in contributing to Sverdrup!
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the system design. When modifying components:
 
-- **Collector:** Keep domain mappings synchronized with ARCHITECTURE.md
+- **Services:** Keep the domain mappings in `sverdrup/services.py` synchronized with ARCHITECTURE.md
 - **Processor:** Maintain backward compatibility with existing `queries` table schema
 - **Dashboard:** Ensure responsive design (test on mobile)
 
@@ -44,12 +44,15 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the system design. When modifying com
 Run tests before submitting a PR:
 
 ```bash
-# Python
-pytest collector/ processor/
+# Python (offline; uses a mock NextDNS API)
+pip install -r requirements-dev.txt
+python3 -m pytest
 
 # Go
 cd server && go test ./...
 ```
+
+CI (`.github/workflows/ci.yml`) runs the Python suite on Python 3.11 and 3.12 and builds the Docker image for every pull request and every push to `main`.
 
 ## Reporting Issues
 

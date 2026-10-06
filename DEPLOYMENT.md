@@ -5,28 +5,52 @@
 ### Prerequisites
 - Docker and Docker Compose
 - NextDNS account with API access enabled
-- NextDNS profile ID and API key
+- For each NextDNS account: its API key, and the IDs of the profiles you want collected
 
 ### Environment Setup
 
-Create a `.env` file (not committed to git):
+All configuration is environment variables in one `.env` file (git-ignored; never commit it). Start from the example:
+
+```bash
+cp .env.example .env
+```
 
 ```
-NEXTDNS_API_KEY=your_api_key_here
-NEXTDNS_PROFILE_ID=your_profile_id_here
+# Short names for your NextDNS accounts (letters, digits, underscores)
+SVERDRUP_ACCOUNTS=home,family
+
+# Per account NAME, uppercased: the account's API key and the profiles to collect.
+# Profiles the account owns but you leave out are not collected.
+NEXTDNS_HOME_API_KEY=your_home_account_api_key
+NEXTDNS_HOME_PROFILES=abc123,def456
+NEXTDNS_FAMILY_API_KEY=your_family_account_api_key
+NEXTDNS_FAMILY_PROFILES=fed321
+
+# Optional (defaults shown)
 NEXTDNS_API_URL=https://api.nextdns.io
 COLLECTOR_INTERVAL=15
 PROCESSOR_INTERVAL=60
+SESSION_GAP_MINUTES=15
+TZ=UTC
 DASHBOARD_PORT=8080
-DB_PATH=/data/sverdrup.db
 ```
+
+`TZ` is an IANA zone such as `America/New_York`; it decides where one day's metrics end. `COLLECTOR_INTERVAL` and `PROCESSOR_INTERVAL` are minutes that cron can repeat evenly: under 60 they must divide 60 (for example 5, 15 or 30); from 60 up they must be whole hours that divide 24 (60, 120, 180, 240, 360, 480, 720 or 1440). The container exits at startup, naming the variable, for any other value. The collector checks this configuration at startup and names every variable that is missing or malformed. The older `NEXTDNS_API_KEY` and `NEXTDNS_PROFILE_ID` variables are no longer read; move them into an account.
 
 ### Run with Docker Compose
 
 ```bash
 git clone https://github.com/shaptonstahl/sverdrup.git
 cd sverdrup
+cp .env.example .env   # then edit
 docker-compose up -d
+```
+
+Or without Compose:
+
+```bash
+docker build -t sverdrup:latest .
+docker run -d --env-file .env -v sverdrup-data:/data -p 8080:8080 sverdrup:latest
 ```
 
 Navigate to `http://localhost:8080` on any device on your home network.
@@ -46,10 +70,12 @@ git clone https://github.com/shaptonstahl/sverdrup.git
 cd sverdrup
 ```
 
-2. Set environment variables:
+2. Set environment variables (or `set -a; . ./.env; set +a` to load your `.env`):
 ```bash
-export NEXTDNS_API_KEY="your_key"
-export NEXTDNS_PROFILE_ID="your_profile"
+export SVERDRUP_ACCOUNTS="home"
+export NEXTDNS_HOME_API_KEY="your_key"
+export NEXTDNS_HOME_PROFILES="your_profile_id"
+export DB_PATH="$PWD/sverdrup.db"
 ```
 
 3. Build and run:
@@ -58,12 +84,10 @@ export NEXTDNS_PROFILE_ID="your_profile"
 cd server
 go build -o sverdrup-server main.go
 
-# Install Python dependencies
-cd ../collector
-pip install -r requirements.txt
+# The collector and processor need only the Python standard library
+cd ..
 
 # Start server (background)
-cd ..
 ./server/sverdrup-server &
 
 # Start scheduler (runs collector/processor on schedule)
@@ -80,9 +104,10 @@ Use `cron` or `systemd` timers to run the collector and processor scripts:
 # Edit crontab
 crontab -e
 
-# Add these lines:
-*/15 * * * * cd /path/to/sverdrup && python collector/collect.py
-0 * * * * cd /path/to/sverdrup && python processor/process.py
+# Add these lines (cron does not read .env; set the variables in the crontab
+# or in a wrapper script):
+*/15 * * * * cd /path/to/sverdrup && python3 collector/collect.py
+0 * * * * cd /path/to/sverdrup && python3 processor/process.py
 ```
 
 #### Systemd timers (example)
@@ -144,8 +169,9 @@ streaming.example.com {
 # View logs
 docker-compose logs -f sverdrup
 
-# View server logs specifically
-docker-compose logs -f server
+# Collector and processor logs live inside the container
+docker exec sverdrup tail -n 50 /var/log/sverdrup-collect.log
+docker exec sverdrup tail -n 50 /var/log/sverdrup-process.log
 ```
 
 ### Manual Setup
@@ -161,7 +187,7 @@ docker-compose logs -f server
 - Verify the server is running: `curl http://localhost:8080/`
 
 ### No data appearing
-- Check NextDNS API credentials in `.env`
+- Check NextDNS accounts, keys and profile IDs in `.env`; the collector log names any variable it rejects
 - Verify collector script ran: check logs
 - Ensure SQLite database file has write permissions
 

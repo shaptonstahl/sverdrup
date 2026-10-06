@@ -2,13 +2,9 @@ services:
   sverdrup:
     build: .
     container_name: sverdrup
+    # Accounts, keys and profiles come from .env; see .env.example.
+    env_file: .env
     environment:
-      - NEXTDNS_API_KEY=${NEXTDNS_API_KEY}
-      - NEXTDNS_PROFILE_ID=${NEXTDNS_PROFILE_ID}
-      - NEXTDNS_API_URL=${NEXTDNS_API_URL:-https://api.nextdns.io}
-      - COLLECTOR_INTERVAL=${COLLECTOR_INTERVAL:-15}
-      - PROCESSOR_INTERVAL=${PROCESSOR_INTERVAL:-60}
-      - DASHBOARD_PORT=${DASHBOARD_PORT:-8080}
       - DB_PATH=/data/sverdrup.db
     volumes:
       - sverdrup-data:/data

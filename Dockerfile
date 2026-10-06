@@ -6,15 +6,17 @@ RUN go build -o sverdrup-server main.go
 
 # Runtime image
 FROM alpine:3.18
-RUN apk add --no-cache python3 py3-pip sqlite dcron
+# The collector and processor use only the Python standard library;
+# tzdata lets the processor resolve TZ for daily metrics.
+RUN apk add --no-cache python3 sqlite dcron tzdata
 
 # Copy Go server
 COPY --from=go-builder /build/sverdrup-server /usr/local/bin/
 
 # Copy Python code
+COPY sverdrup/ /app/sverdrup/
 COPY collector/ /app/collector/
 COPY processor/ /app/processor/
-RUN cd /app/collector && pip install --no-cache-dir -r requirements.txt
 
 # Copy entrypoint script
 COPY entrypoint.sh /entrypoint.sh
