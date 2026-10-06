@@ -15,7 +15,7 @@ Thank you for your interest in contributing to Sverdrup!
 ## Coding Standards
 
 ### Python
-- PEP 8 compliance; use `black` for formatting
+- PEP 8 compliance; use `black` for formatting, pinned in `requirements-dev.txt` (24.2.0). Run it from the project virtual environment (or `pipx run black==24.2.0`), not a system package, since black's yearly stable style changes otherwise produce spurious diffs
 - Type hints for all functions
 - Docstrings for public functions and classes
 - Tests: pytest (in `tests/` directory)
