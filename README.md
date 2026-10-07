@@ -36,11 +36,14 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed setup instructions.
 **Minimal example (Docker Compose):**
 
 ```bash
+# Copy the Compose example (git-ignored once copied) and point it at this clone
+cp docker-compose.example.yml docker-compose.yml   # then set build: .
+
 # Create .env with your NextDNS accounts, keys and profiles
 cp .env.example .env   # then edit
 
 # Start the container
-docker-compose up -d
+docker compose up -d
 
 # Access the dashboard at http://localhost:8080
 ```

@@ -43,7 +43,11 @@ logs/
 
 # Docker
 .docker-sync
+docker-compose.yml
 docker-compose.override.yml
 
 # Misc
 .envrc
+
+# Local tool indexes
+.codegraph/

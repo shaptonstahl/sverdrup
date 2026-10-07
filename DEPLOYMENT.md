@@ -37,23 +37,60 @@ DASHBOARD_PORT=8080
 
 `TZ` is an IANA zone such as `America/New_York`; it decides where one day's metrics end. `COLLECTOR_INTERVAL` and `PROCESSOR_INTERVAL` are minutes that cron can repeat evenly: under 60 they must divide 60 (for example 5, 15 or 30); from 60 up they must be whole hours that divide 24 (60, 120, 180, 240, 360, 480, 720 or 1440). The container exits at startup, naming the variable, for any other value. The collector checks this configuration at startup and names every variable that is missing or malformed. The older `NEXTDNS_API_KEY` and `NEXTDNS_PROFILE_ID` variables are no longer read; move them into an account.
 
-### Run with Docker Compose
+### Run with Docker Compose (Miracle / Synology layout)
+
+The repository ships `docker-compose.example.yml`, not a `docker-compose.yml`. A deployment keeps its own `docker-compose.yml`, `.env` and `data/` in a parent project directory, with the git clone in a `srv/` subfolder beneath it. A `git pull` then never touches your configuration or your database. On Miracle the project directory is `/volume1/docker/sverdrup`:
+
+```
+/volume1/docker/sverdrup/
+  docker-compose.yml   # copied from srv/docker-compose.example.yml
+  .env                 # copied from srv/.env.example
+  data/                # SQLite database, bind-mounted at /data
+  srv/                 # git clone of sverdrup
+```
+
+1. Clone the repository into the `srv` subfolder:
+   ```bash
+   mkdir -p /volume1/docker/sverdrup
+   cd /volume1/docker/sverdrup
+   git clone https://github.com/shaptonstahl/sverdrup.git srv
+   ```
+2. Copy the Compose example up into the project directory:
+   ```bash
+   cp srv/docker-compose.example.yml docker-compose.yml
+   ```
+3. Copy the environment example and fill in your NextDNS accounts, API keys, profile IDs and `TZ` (see [Environment Setup](#environment-setup)):
+   ```bash
+   cp srv/.env.example .env
+   chmod 600 .env
+   ```
+4. Create the data directory outside the repo:
+   ```bash
+   mkdir -p /volume1/docker/sverdrup/data
+   ```
+5. Build and start the service from the project directory:
+   ```bash
+   docker compose up -d
+   ```
+
+Compose reads `.env` in the project directory both to fill `${DASHBOARD_PORT}` in the port mapping and to pass every setting into the container, so the host port and the port the server listens on stay the same.
+
+To update to the latest code, pull the clone and rebuild:
 
 ```bash
-git clone https://github.com/shaptonstahl/sverdrup.git
-cd sverdrup
-cp .env.example .env   # then edit
-docker-compose up -d
+cd /volume1/docker/sverdrup && git -C srv pull && docker compose up -d --build
 ```
+
+For local development inside a clone, copy `docker-compose.example.yml` to `docker-compose.yml` in the repo root (it is git-ignored), change `build: ./srv` to `build: .`, and keep `.env` next to it; the database then lands in the repo's git-ignored `data/`.
 
 Or without Compose:
 
 ```bash
 docker build -t sverdrup:latest .
-docker run -d --env-file .env -v sverdrup-data:/data -p 8080:8080 sverdrup:latest
+docker run -d --env-file .env -v "$PWD/data:/data" -p 8080:8080 sverdrup:latest
 ```
 
-Navigate to `http://localhost:8080` on any device on your home network.
+Navigate to `http://<host>:8080` (or your `DASHBOARD_PORT`) on any device on your home network.
 
 ## Manual Setup (without Docker)
 
@@ -158,7 +195,7 @@ streaming.example.com {
 ## Data Persistence
 
 - SQLite database file is stored at the path specified by `DB_PATH`
-- In Docker: use a named volume to persist data across container restarts
+- In Docker: `/data` (default `DB_PATH=/data/sverdrup.db`) is bind-mounted from the project's `data/` directory (`/volume1/docker/sverdrup/data` on Miracle), so the database survives container rebuilds and lives outside the git clone
 - Recommended backup strategy: daily snapshots of the database file
 
 ## Monitoring and Logs
@@ -166,8 +203,8 @@ streaming.example.com {
 ### Docker Compose
 
 ```bash
-# View logs
-docker-compose logs -f sverdrup
+# View logs (from the project directory)
+docker compose logs -f sverdrup
 
 # Collector and processor logs live inside the container
 docker exec sverdrup tail -n 50 /var/log/sverdrup-collect.log
