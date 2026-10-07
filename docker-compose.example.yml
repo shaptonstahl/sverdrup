@@ -1,0 +1,30 @@
+# Sverdrup - Miracle / Synology deployment EXAMPLE.
+# Copy to /volume1/docker/sverdrup/docker-compose.yml (outside the repo clone).
+#
+# Directory structure:
+#   /volume1/docker/sverdrup/
+#     docker-compose.yml   # copied from srv/docker-compose.example.yml
+#     .env                 # copied from srv/.env.example
+#     data/                # bind-mounted SQLite data directory
+#     srv/                 # git clone of sverdrup
+#
+# Local development inside the repo clone: copy this file to docker-compose.yml
+# in the repo root (it is git-ignored) and change `build: ./srv` to `build: .`.
+# The ./data bind mount then lands in the repo's git-ignored data/ directory.
+#
+# DASHBOARD_PORT is read from .env both by Compose (for the host port) and by
+# the server inside the container (for the port it listens on), so both sides
+# of the mapping use it.
+#
+services:
+  sverdrup:
+    build: ./srv
+    image: sverdrup:latest
+    container_name: sverdrup
+    restart: unless-stopped
+    ports:
+      - "${DASHBOARD_PORT:-8080}:${DASHBOARD_PORT:-8080}"
+    volumes:
+      - ./data:/data
+    env_file:
+      - .env
