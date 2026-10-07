@@ -2,7 +2,7 @@
 
 Measure and analyze home use of streaming services.
 
-**Status:** The data pipeline (collector, processor, SQLite schema) is built and tested; the dashboard is next.
+**Status:** The data pipeline (collector, processor, SQLite schema) and the dashboard (Go + htmx web UI and JSON API) are built and tested.
 
 ## Purpose
 
@@ -67,9 +67,11 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed deployment guides, including Doc
 ```bash
 pip install -r requirements-dev.txt
 python3 -m pytest
+
+cd server && go test ./...
 ```
 
-The suite runs offline against a mock NextDNS API.
+The Python suite runs offline against a mock NextDNS API; the Go suite tests the dashboard against a fixture database.
 
 ## Contributing
 

@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="htmx-config" content='{"includeIndicatorStyles": false}'>
+<title>{{template "title" .}} - Sverdrup</title>
+<link rel="stylesheet" href="{{asset "style.css"}}">
+<script src="{{asset "htmx.min.js"}}" defer></script>
+</head>
+<body>
+<header class="top"><a href="/" class="brand">Sverdrup</a><span class="tagline">streaming use at home</span></header>
+<main>
+{{template "content" .}}
+</main>
+</body>
+</html>

@@ -58,7 +58,7 @@ Navigate to `http://localhost:8080` on any device on your home network.
 ## Manual Setup (without Docker)
 
 ### System Requirements
-- Go 1.21+
+- Go 1.26+ (only to build the dashboard; its SQLite driver is pure Go, so no C compiler)
 - Python 3.10+
 - SQLite3
 
@@ -82,7 +82,7 @@ export DB_PATH="$PWD/sverdrup.db"
 ```bash
 # Build Go server
 cd server
-go build -o sverdrup-server main.go
+go build -o sverdrup-server .
 
 # The collector and processor need only the Python standard library
 cd ..
@@ -184,9 +184,12 @@ docker exec sverdrup tail -n 50 /var/log/sverdrup-process.log
 
 ### Dashboard not accessible
 - Check that port 8080 is open and not blocked by a firewall
-- Verify the server is running: `curl http://localhost:8080/`
+- Verify the server is running: `curl http://localhost:8080/health`
+- A page saying "The database could not be read" usually means the server cannot open an existing database: it needs read access to the file and write access to its directory, because SQLite keeps its WAL shared-memory file (`sverdrup.db-shm`) next to it. The dashboard never writes data, but a read-only mount of the data directory does not work
 
 ### No data appearing
+- "No data yet" (HTTP 503) means the database or its tables do not exist yet; the collector creates them on its first scheduled run
+- Set the same `TZ` for the dashboard as for the processor: the processor's `TZ` defines each metrics day, and the dashboard's defines "today", this week (from Monday) and this month
 - Check NextDNS accounts, keys and profile IDs in `.env`; the collector log names any variable it rejects
 - Verify collector script ran: check logs
 - Ensure SQLite database file has write permissions

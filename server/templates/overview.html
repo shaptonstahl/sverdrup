@@ -1,0 +1,68 @@
+{{define "title"}}Overview{{end}}
+{{define "content"}}
+<h1>Overview</h1>
+<form class="filter" action="/" method="get"
+      hx-get="/" hx-trigger="change" hx-target="#services-panel" hx-swap="outerHTML" hx-push-url="true">
+  <label for="device">Show</label>
+  <select id="device" name="device">
+    <option value=""{{if not .Device}} selected{{end}}>Whole household</option>
+    {{range .Devices}}<option value="{{.Key}}"{{if eq .Key $.DeviceSel}} selected{{end}}>{{.DeviceName}} ({{.Account}})</option>
+    {{end}}
+  </select>
+  <noscript><button type="submit">Apply</button></noscript>
+</form>
+{{template "services-panel" .}}
+<section>
+  <h2>Devices</h2>
+  {{if .Devices}}
+  <p class="hint">Time per NextDNS device. Reliable only where NextDNS runs on each client; devices watching at once each count, so these can add up to more than the household.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Device</th><th class="num">This week</th><th class="num">This month</th><th class="num wide">All time</th><th class="wide">Last seen</th></tr></thead>
+    <tbody>
+    {{range .Devices}}<tr>
+      <td><a href="/?device={{.Key}}">{{.DeviceName}}</a> <span class="muted">{{.Account}}</span></td>
+      <td class="num">{{minutes .WeekMinutes}}</td>
+      <td class="num">{{minutes .MonthMinutes}}</td>
+      <td class="num wide">{{minutes .TotalMinutes}}</td>
+      <td class="wide">{{localTime .LastSeen}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table></div>
+  {{else}}
+  <p class="notice">No device usage recorded yet.</p>
+  {{end}}
+</section>
+{{end}}
+
+{{define "services-panel"}}
+<section id="services-panel">
+  <h2>{{if .Device}}{{.Device.Name}} <span class="muted">({{.Device.Account}})</span>{{else}}Whole household{{end}}</h2>
+  <div class="cards">
+    <div class="card"><div class="label">This week <span class="muted">from {{shortDate .Period.WeekStart}}</span></div>
+      <div class="value">{{minutes .Totals.WeekMinutes}}</div><div class="muted">{{plural .Totals.WeekSessions "session"}}</div></div>
+    <div class="card"><div class="label">This month <span class="muted">from {{shortDate .Period.MonthStart}}</span></div>
+      <div class="value">{{minutes .Totals.MonthMinutes}}</div><div class="muted">{{plural .Totals.MonthSessions "session"}}</div></div>
+    <div class="card"><div class="label">Services used this month</div>
+      <div class="value">{{.UsedMonth}} <span class="muted">of {{len .Services}}</span></div></div>
+  </div>
+  {{if .Services}}
+  <div class="scroll"><table>
+    <thead><tr><th>Service</th><th class="num">This week</th><th class="num">This month</th><th class="num wide">All time</th><th class="num wide">Sessions</th><th class="wide">Last seen</th></tr></thead>
+    <tbody>
+    {{range .Services}}<tr>
+      <td><a href="/services/{{.ID}}">{{.Name}}</a></td>
+      <td class="num">{{minutes .WeekMinutes}}</td>
+      <td class="num">{{minutes .MonthMinutes}}</td>
+      <td class="num wide">{{minutes .TotalMinutes}}</td>
+      <td class="num wide">{{.SessionCount}}</td>
+      <td class="wide">{{localTime .LastSeen}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table></div>
+  {{else}}
+  <p class="notice">No services configured yet.</p>
+  {{end}}
+</section>
+{{end}}

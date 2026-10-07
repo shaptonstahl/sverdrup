@@ -1,0 +1,83 @@
+{{define "title"}}{{.Summary.Name}}{{end}}
+{{define "content"}}
+<p class="crumbs"><a href="/">Overview</a></p>
+<h1>{{.Summary.Name}}</h1>
+<div class="cards">
+  <div class="card"><div class="label">This week</div><div class="value">{{minutes .Summary.WeekMinutes}}</div><div class="muted">{{plural .Summary.WeekSessions "session"}}</div></div>
+  <div class="card"><div class="label">This month</div><div class="value">{{minutes .Summary.MonthMinutes}}</div><div class="muted">{{plural .Summary.MonthSessions "session"}}</div></div>
+  <div class="card"><div class="label">All time</div><div class="value">{{minutes .Summary.TotalMinutes}}</div><div class="muted">{{plural .Summary.SessionCount "session"}} on {{plural .Summary.ActiveDays "day"}}</div></div>
+  <div class="card"><div class="label">Median days between use</div><div class="value">{{if .HasMedian}}{{days .MedianGap}}{{else}}-{{end}}</div><div class="muted">last seen {{localTime .Summary.LastSeen}}</div></div>
+</div>
+{{template "history-panel" .}}
+<section>
+  <h2>Devices</h2>
+  {{if .Devices}}
+  <div class="scroll"><table>
+    <thead><tr><th>Device</th><th class="num">This week</th><th class="num">This month</th><th class="num wide">All time</th><th class="wide">Last seen</th></tr></thead>
+    <tbody>
+    {{range .Devices}}<tr>
+      <td>{{.DeviceName}} <span class="muted">{{.Account}}</span></td>
+      <td class="num">{{minutes .WeekMinutes}}</td>
+      <td class="num">{{minutes .MonthMinutes}}</td>
+      <td class="num wide">{{minutes .TotalMinutes}}</td>
+      <td class="wide">{{localTime .LastSeen}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table></div>
+  {{else}}
+  <p class="notice">No device usage recorded for this service.</p>
+  {{end}}
+</section>
+<section>
+  <h2>Recent sessions</h2>
+  {{if .Sessions}}
+  <div class="scroll"><table>
+    <thead><tr><th>Started</th><th class="wide">Ended</th><th class="num">Duration</th><th>Devices</th><th class="wide">Profiles</th></tr></thead>
+    <tbody>
+    {{range .Sessions}}<tr>
+      <td>{{localTime .StartTime}}</td>
+      <td class="wide">{{localTime .EndTime}}</td>
+      <td class="num">{{minutes .Minutes}}</td>
+      <td>{{join .DeviceNames}}</td>
+      <td class="wide">{{.Account}}: {{join .ProfileIDs}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table></div>
+  {{else}}
+  <p class="notice">No sessions recorded for this service.</p>
+  {{end}}
+</section>
+{{end}}
+
+{{define "history-panel"}}
+<section id="history-panel">
+  <h2>Daily viewing</h2>
+  <nav class="ranges" aria-label="History range">
+    {{range .Ranges}}<a href="/services/{{$.Summary.ID}}?days={{.}}"{{if eq . $.Days}} aria-current="true"{{end}}
+       hx-get="/services/{{$.Summary.ID}}?days={{.}}" hx-target="#history-panel" hx-swap="outerHTML" hx-push-url="true">{{.}} days</a>
+    {{end}}
+  </nav>
+  <svg class="spark" viewBox="0 0 {{sparkWidth .History}} {{sparkHeight}}" preserveAspectRatio="none" role="img"
+       aria-label="Minutes per day for the last {{.Days}} days">
+    {{range bars .History .MaxDay}}<rect x="{{.X}}" y="{{.Y}}" width="{{.W}}" height="{{.H}}"><title>{{.Label}}</title></rect>{{end}}
+  </svg>
+  {{if .Active}}
+  <div class="scroll"><table>
+    <thead><tr><th>Day</th><th class="num">Time</th><th class="num">Sessions</th><th class="wide">Last seen</th></tr></thead>
+    <tbody>
+    {{range .Active}}<tr>
+      <td>{{day .Date}}</td>
+      <td class="num">{{minutes .TotalMinutes}}</td>
+      <td class="num">{{.SessionCount}}</td>
+      <td class="wide">{{localTime .LastSeen}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table></div>
+  {{else}}
+  <p class="notice">No viewing in the last {{.Days}} days.</p>
+  {{end}}
+</section>
+{{end}}
