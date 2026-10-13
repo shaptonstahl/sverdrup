@@ -5,7 +5,7 @@
 ### Prerequisites
 - Docker and Docker Compose
 - NextDNS account with API access enabled
-- For each NextDNS account: its API key, and the IDs of the profiles you want collected
+- For each NextDNS account: its API key (every profile the key can see is collected unless you list some)
 
 ### Environment Setup
 
@@ -19,12 +19,16 @@ cp .env.example .env
 # Short names for your NextDNS accounts (letters, digits, underscores)
 SVERDRUP_ACCOUNTS=home,family
 
-# Per account NAME, uppercased: the account's API key and the profiles to collect.
-# Profiles the account owns but you leave out are not collected.
+# Per account NAME, uppercased: the account's API key. Every profile the key
+# can see is collected.
 NEXTDNS_HOME_API_KEY=your_home_account_api_key
-NEXTDNS_HOME_PROFILES=abc123,def456
 NEXTDNS_FAMILY_API_KEY=your_family_account_api_key
+# Optional: collect only these profiles for an account
 NEXTDNS_FAMILY_PROFILES=fed321
+
+# Optional profile groups; the first is the dashboard's default view
+SVERDRUP_GROUPS=HapLan
+SVERDRUP_GROUP_HAPLAN_EXCLUDE=Julie,Cumberland,calibration
 
 # Optional (defaults shown)
 NEXTDNS_API_URL=https://api.nextdns.io
@@ -36,6 +40,26 @@ DASHBOARD_PORT=8080
 ```
 
 `TZ` is an IANA zone such as `America/New_York`; it decides where one day's metrics end. `COLLECTOR_INTERVAL` and `PROCESSOR_INTERVAL` are minutes that cron can repeat evenly: under 60 they must divide 60 (for example 5, 15 or 30); from 60 up they must be whole hours that divide 24 (60, 120, 180, 240, 360, 480, 720 or 1440). The container exits at startup, naming the variable, for any other value. The collector checks this configuration at startup and names every variable that is missing or malformed. The older `NEXTDNS_API_KEY` and `NEXTDNS_PROFILE_ID` variables are no longer read; move them into an account.
+
+### Profiles and groups
+
+Each collector run asks NextDNS which profiles every account's key can see (`GET /profiles`) and collects them all, storing each profile's NextDNS name. A profile that appears later is backfilled with every log NextDNS still retains, then polled like the rest. When two keys can see the same profile, the first account in `SVERDRUP_ACCOUNTS` collects it.
+
+`NEXTDNS_<NAME>_PROFILES` is optional. When it is set, that account collects only the listed profile IDs, as before discovery existed, so an existing `.env` keeps collecting exactly what it did; delete the line to collect everything the key can see. A listed profile the key cannot see is logged as a warning and fails to collect, and no other account collects a listed profile.
+
+Groups aggregate profiles into named views, configured with `SVERDRUP_GROUPS` (comma-separated names: a letter, then letters, digits or underscores; `all` is reserved) and, for each group `NAME` uppercased, exactly one of:
+
+- `SVERDRUP_GROUP_<NAME>_PROFILES`: the profiles in the group
+- `SVERDRUP_GROUP_<NAME>_EXCLUDE`: the profiles left out of a group of every profile; profiles discovered later join it automatically
+
+Entries are profile IDs or NextDNS profile names (names ignore case; a name shared by two profiles matches both). For example, a household group of every profile except two other households and a test profile:
+
+```
+SVERDRUP_GROUPS=HapLan
+SVERDRUP_GROUP_HAPLAN_EXCLUDE=Julie,Cumberland,calibration
+```
+
+The processor reads the groups on each run and logs a warning for any entry that matches no known profile, so a misspelled exclusion is visible in `/var/log/sverdrup-process.log`; the processor refuses to run, naming the variable, when a group is malformed. The dashboard and API show the first group by default, offer the others and "All profiles", and pick up a change after the next processor run (restart the container to load a changed `.env`). `GET /api/groups` shows how each group resolved.
 
 ### Run with Docker Compose (Miracle / Synology layout)
 
@@ -59,7 +83,7 @@ The repository ships `docker-compose.example.yml`, not a `docker-compose.yml`. A
    ```bash
    cp src/docker-compose.example.yml docker-compose.yml
    ```
-3. Copy the environment example and fill in your NextDNS accounts, API keys, profile IDs and `TZ` (see [Environment Setup](#environment-setup)):
+3. Copy the environment example and fill in your NextDNS accounts, API keys, any profile groups and `TZ` (see [Environment Setup](#environment-setup)):
    ```bash
    cp src/.env.example .env
    chmod 600 .env
@@ -111,7 +135,6 @@ cd sverdrup
 ```bash
 export SVERDRUP_ACCOUNTS="home"
 export NEXTDNS_HOME_API_KEY="your_key"
-export NEXTDNS_HOME_PROFILES="your_profile_id"
 export DB_PATH="$PWD/sverdrup.db"
 ```
 
@@ -227,7 +250,8 @@ docker exec sverdrup tail -n 50 /var/log/sverdrup-process.log
 ### No data appearing
 - "No data yet" (HTTP 503) means the database or its tables do not exist yet; the collector creates them on its first scheduled run
 - Set the same `TZ` for the dashboard as for the processor: the processor's `TZ` defines each metrics day, and the dashboard's defines "today", this week (from Monday) and this month
-- Check NextDNS accounts, keys and profile IDs in `.env`; the collector log names any variable it rejects
+- Check NextDNS accounts, keys and profile IDs in `.env`; the collector log names any variable it rejects, and logs how many profiles it collects per account
+- A group showing less than expected: check `GET /api/groups` for its members and the processor log for entries that matched no profile
 - Verify collector script ran: check logs
 - Ensure SQLite database file has write permissions
 
