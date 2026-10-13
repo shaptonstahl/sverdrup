@@ -302,3 +302,20 @@ def test_removing_a_group_clears_its_rows_and_unmatched_entries_warn(conn, caplo
 def test_main_rejects_bad_group_config(conn, db_path):
     assert processor.main({"DB_PATH": db_path, "SVERDRUP_GROUPS": "HapLan"}) == 1
     assert processor.main({"DB_PATH": db_path, **HAPLAN_ENV}) == 0
+
+
+def test_excluded_hosts_never_make_group_sessions(conn):
+    add_profiles(conn)
+    # An idle Google tab refreshing accounts.youtube.com every 10 minutes.
+    insert_queries(
+        conn,
+        [
+            (utc(2026, 3, 1, 20, m), "accounts.youtube.com", "laptop", "4c6947")
+            for m in range(0, 60, 10)
+        ],
+    )
+
+    process(conn, HAPLAN_ENV)
+
+    assert group_sessions(conn) == []
+    assert group_metrics(conn) == []
