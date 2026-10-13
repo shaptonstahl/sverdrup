@@ -259,7 +259,7 @@ An API key belongs to a NextDNS account, and an account can own profiles you do 
 
 **Algorithm:**
 1. Read unprocessed queries from `queries` table
-2. For each query, match domain to a streaming service using a domain-to-service mapping; store the match and mark the query processed. If the services table has changed since the last run, reclassify every query
+2. For each query, match domain to a streaming service using a domain-to-service mapping; store the match and mark the query processed. If the services table or the excluded hosts have changed since the last run, reclassify every query
 3. Group consecutive matched queries (same service, same account, any profile, any device) into sessions, using the gap threshold: a gap longer than the threshold starts a new session; a gap exactly equal to it does not. Profile and device never split a session: NextDNS is usually set up at the router, so the logged device is unreliable, and profiles are many-to-many with clients (a client can move onto a VPN profile mid-viewing). Each session records every profile and device it touched
 4. Calculate session length in minutes (last query minus first query)
 5. Aggregate by service, profile and local day: sum total_minutes, count sessions, take the latest matched query as last_seen (or, for a day that has minutes but no matched query, such as a profile segment crossing midnight, the end of the latest minutes credited that day). Within a session, the time between two queries belongs to the profile of the earlier query, and the session counts once, under the profile it started in
