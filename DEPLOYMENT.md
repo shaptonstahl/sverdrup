@@ -5,7 +5,7 @@
 ### Prerequisites
 - Docker and Docker Compose
 - NextDNS account with API access enabled
-- For each NextDNS account: its API key (every profile the key can see is collected unless you list some)
+- For each NextDNS account: its API key (every profile the key can see is collected)
 
 ### Environment Setup
 

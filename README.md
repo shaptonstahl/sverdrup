@@ -23,7 +23,7 @@ The sverdrup (Sv) is the oceanographers' unit of volume transport in ocean curre
 
 Sverdrup is a containerized system with three components:
 
-1. **Collector** (Python) — Fetches DNS logs from every profile one or more NextDNS accounts can see (or only the profiles you list), backfills historical data on first run and for each new profile, then polls incrementally
+1. **Collector** (Python) — Fetches DNS logs from every profile one or more NextDNS accounts can see, backfills historical data on first run and for each new profile, then polls incrementally
 2. **Processor** (Python) — Sessionizes DNS queries into viewing sessions and computes metrics per profile, per device, and per profile group
 3. **Dashboard** (Go + htmx) — Lightweight web UI, mobile-friendly, shows time-per-service and usage frequency for a profile group, all profiles, or one device
 

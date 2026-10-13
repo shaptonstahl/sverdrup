@@ -462,13 +462,13 @@ Run the Python suite with one command from the repository root: `python3 -m pyte
 - Unit tests for domain matching and service classification
 - Integration tests against a mock NextDNS API
 - Backfill vs. incremental logic (time window validation)
-- Profile discovery: every visible profile collected once across accounts, explicit lists honored, a new profile backfilled, names stored and refreshed, listing failures
+- Profile discovery: every visible profile collected once across accounts, a leftover profile list ignored with a warning, a new profile backfilled, names stored and refreshed, listing failures
 
 ### Processor Tests (Python)
 - Unit tests for sessionization (gap detection, session boundaries)
 - Aggregation and metric calculation accuracy
 - Edge cases: midnight boundaries, device name changes
-- Profile groups (`tests/test_groups.py`): configuration parsing and errors, the exclusion form including later profiles, matching by ID or name, and per-group aggregation without double counting
+- Profile groups (`tests/test_groups.py`): configuration parsing and errors, the exclusion form including later profiles, matching by ID or name, an exclusion group kept from its last good run when an entry is unmatched or a profile is unnamed, and per-group aggregation without double counting
 
 ### Dashboard Tests (Go)
 - Run with `cd server && go test ./...`, offline. They build a fixture database from `server/testdata/schema.sql`, a copy of the pipeline schema that `tests/test_server_schema.py` checks matches `sverdrup/db.py` table by table (columns, indexes, foreign keys)
