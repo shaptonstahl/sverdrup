@@ -39,14 +39,17 @@ def log_entry(
 
 
 class MockNextDNS:
-    """Serve ``GET /profiles/:id/logs`` with from/sort/limit/cursor support.
+    """Serve ``GET /profiles/:id/logs`` with from/sort/limit/cursor support,
+    and ``GET /profiles``, which lists the key's profiles with their ``names``
+    (default: the ID) in pages of ``profiles_page_size``.
 
     ``accounts`` maps each API key to the profile IDs its account owns, and
     ``logs`` maps profile IDs to their entries; ``entries`` is shorthand for
     the default PROFILE_ID's logs. ``failures`` is a queue of (status,
     headers) responses returned before any real page, to exercise rate
     limiting. ``requests`` records each request's profile, query parameters
-    and API key header.
+    and API key header; ``profile_requests`` records the API key of each
+    ``GET /profiles``, and ``profiles_failure`` makes it answer that status.
 
     Like the real API, oldest-first (``sort=asc``) paging never ends: past
     the newest entry every response is an empty page carrying the same
@@ -61,6 +64,10 @@ class MockNextDNS:
         self.failures: deque[tuple[int, dict[str, str]]] = deque()
         self.requests: list[dict] = []
         self.max_requests = 500
+        self.names: dict[str, str] = {}
+        self.profile_requests: list[str | None] = []
+        self.profiles_failure: int | None = None
+        self.profiles_page_size = 100
         mock = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -97,6 +104,8 @@ class MockNextDNS:
     def _handle(self, handler: BaseHTTPRequestHandler) -> None:
         parsed = urllib.parse.urlparse(handler.path)
         params = dict(urllib.parse.parse_qsl(parsed.query))
+        if parsed.path == "/profiles":
+            return self._handle_profiles(handler, params)
         match = re.fullmatch(r"/profiles/([^/]+)/logs", parsed.path)
         profile = match.group(1) if match else None
         api_key = handler.headers.get("X-Api-Key")
@@ -132,6 +141,30 @@ class MockNextDNS:
         else:
             cursor = str(offset + limit) if offset + limit < len(selected) else None
         body = {"data": page, "meta": {"pagination": {"cursor": cursor}}}
+        self._send(handler, 200, body)
+
+    def _handle_profiles(
+        self, handler: BaseHTTPRequestHandler, params: dict[str, str]
+    ) -> None:
+        api_key = handler.headers.get("X-Api-Key")
+        self.profile_requests.append(api_key)
+        if api_key not in self.accounts:
+            return self._send(handler, 403, {"errors": [{"code": "forbidden"}]})
+        if self.profiles_failure is not None:
+            return self._send(
+                handler, self.profiles_failure, {"errors": [{"code": "x"}]}
+            )
+        profiles = [
+            {"id": pid, "fingerprint": f"fp{pid}", "name": self.names.get(pid, pid)}
+            for pid in sorted(self.accounts[api_key])
+        ]
+        offset = int(params.get("cursor", "0"))
+        end = offset + self.profiles_page_size
+        cursor = str(end) if end < len(profiles) else None
+        body = {
+            "data": profiles[offset:end],
+            "meta": {"pagination": {"cursor": cursor}},
+        }
         self._send(handler, 200, body)
 
     @staticmethod

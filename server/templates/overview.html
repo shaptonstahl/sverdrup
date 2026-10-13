@@ -3,15 +3,44 @@
 <h1>Overview</h1>
 <form class="filter" action="/" method="get"
       hx-get="/" hx-trigger="change" hx-target="#services-panel" hx-swap="outerHTML" hx-push-url="true">
-  <label for="device">Show</label>
-  <select id="device" name="device">
-    <option value=""{{if not .Device}} selected{{end}}>Whole household</option>
-    {{range .Devices}}<option value="{{.Key}}"{{if eq .Key $.DeviceSel}} selected{{end}}>{{.DeviceName}} ({{.Account}})</option>
-    {{end}}
+  <label for="view">Show</label>
+  <select id="view" name="view">
+    {{if .Groups}}<optgroup label="Profile groups">
+    {{range .Groups}}{{$v := print "group:" .Name}}<option value="{{$v}}"{{if eq $v $.Scope.View}} selected{{end}}>{{.Name}}</option>
+    {{end}}</optgroup>{{end}}
+    <option value="all"{{if eq $.Scope.View "all"}} selected{{end}}>All profiles</option>
+    {{if .Devices}}<optgroup label="Devices">
+    {{range .Devices}}{{$v := print "device:" .Key}}<option value="{{$v}}"{{if eq $v $.Scope.View}} selected{{end}}>{{.DeviceName}} ({{.Account}})</option>
+    {{end}}</optgroup>{{end}}
   </select>
   <noscript><button type="submit">Apply</button></noscript>
 </form>
 {{template "services-panel" .}}
+<section>
+  <h2>Profiles</h2>
+  {{if .Groups}}<ul class="hint">
+    {{range .Groups}}<li><a href="/?group={{.Name}}">{{.Name}}</a>: {{if eq .Rule "exclude"}}every profile except {{join .Entries}}{{else}}{{join .Entries}}{{end}}</li>
+    {{end}}
+  </ul>{{end}}
+  {{if .Profiles}}
+  <p class="hint">Time per NextDNS profile, as each profile's share of its account's sessions.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Profile</th><th class="wide">Groups</th><th class="num">This week</th><th class="num">This month</th><th class="num wide">All time</th></tr></thead>
+    <tbody>
+    {{range .Profiles}}<tr>
+      <td>{{.Name}} <span class="muted">{{if ne .Name .ID}}{{.ID}} {{end}}{{.Account}}</span></td>
+      <td class="wide">{{if .Groups}}{{join .Groups}}{{else}}<span class="muted">none</span>{{end}}</td>
+      <td class="num">{{minutes .WeekMinutes}}</td>
+      <td class="num">{{minutes .MonthMinutes}}</td>
+      <td class="num wide">{{minutes .TotalMinutes}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table></div>
+  {{else}}
+  <p class="notice">No profiles collected yet.</p>
+  {{end}}
+</section>
 <section>
   <h2>Devices</h2>
   {{if .Devices}}
@@ -37,7 +66,7 @@
 
 {{define "services-panel"}}
 <section id="services-panel">
-  <h2>{{if .Device}}{{.Device.Name}} <span class="muted">({{.Device.Account}})</span>{{else}}Whole household{{end}}</h2>
+  <h2>{{with .Scope.Device}}{{.Name}} <span class="muted">({{.Account}})</span>{{else}}{{with .Scope.Group}}{{.}} <span class="muted">profile group</span>{{else}}All profiles{{end}}{{end}}</h2>
   <div class="cards">
     <div class="card"><div class="label">This week <span class="muted">from {{shortDate .Period.WeekStart}}</span></div>
       <div class="value">{{minutes .Totals.WeekMinutes}}</div><div class="muted">{{plural .Totals.WeekSessions "session"}}</div></div>
@@ -51,7 +80,7 @@
     <thead><tr><th>Service</th><th class="num">This week</th><th class="num">This month</th><th class="num wide">All time</th><th class="num wide">Sessions</th><th class="wide">Last seen</th></tr></thead>
     <tbody>
     {{range .Services}}<tr>
-      <td><a href="/services/{{.ID}}">{{.Name}}</a></td>
+      <td><a href="/services/{{.ID}}{{with $.Scope.Param}}?group={{.}}{{end}}">{{.Name}}</a></td>
       <td class="num">{{minutes .WeekMinutes}}</td>
       <td class="num">{{minutes .MonthMinutes}}</td>
       <td class="num wide">{{minutes .TotalMinutes}}</td>

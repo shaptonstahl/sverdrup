@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html/template"
 	"io/fs"
 	"log"
@@ -14,6 +16,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -84,6 +87,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/services/{id}/metrics", s.handleAPIMetrics)
 	mux.HandleFunc("GET /api/sessions", s.handleAPISessions)
 	mux.HandleFunc("GET /api/devices", s.handleAPIDevices)
+	mux.HandleFunc("GET /api/groups", s.handleAPIGroups)
+	mux.HandleFunc("GET /api/profiles", s.handleAPIProfiles)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -112,12 +117,95 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
+// scopeView is a scope as the dashboard shows and links it.
+type scopeView struct {
+	Scope
+	// View is the overview selector's value: "group:<name>", "all" or
+	// "device:<account>:<name>".
+	View string
+	// Param is the ?group= value that keeps this scope on the service page
+	// and the API: a group name, "all", or empty for the default.
+	Param string
+}
+
+func newScopeView(sc Scope, groups []Group) scopeView {
+	v := scopeView{Scope: sc}
+	switch {
+	case sc.Device != nil:
+		v.View = "device:" + sc.Device.String()
+	case sc.Group != "":
+		v.View, v.Param = "group:"+sc.Group, sc.Group
+	default:
+		v.View = AllProfiles
+		if len(groups) > 0 {
+			v.Param = AllProfiles
+		}
+	}
+	return v
+}
+
+// scopeParam reads whose usage to show from ?view= (the overview selector),
+// ?group= (a group name, or "all" for every profile) or ?device=
+// (account:device_name, only where allowDevice). With none, it is the first
+// configured group, else every profile.
+func scopeParam(r *http.Request, groups []Group, allowDevice bool) (Scope, error) {
+	q := r.URL.Query()
+	view, group, device := q.Get("view"), q.Get("group"), q.Get("device")
+	given := 0
+	for _, v := range []string{view, group, device} {
+		if v != "" {
+			given++
+		}
+	}
+	if given > 1 {
+		return Scope{}, errors.New("give only one of view, group and device")
+	}
+	if view != "" {
+		switch {
+		case view == AllProfiles:
+			group = AllProfiles
+		case strings.HasPrefix(view, "group:"):
+			group = strings.TrimPrefix(view, "group:")
+		case strings.HasPrefix(view, "device:"):
+			device = strings.TrimPrefix(view, "device:")
+		default:
+			return Scope{}, fmt.Errorf("view must be all, group:<name> or device:<account>:<name>, got %q", view)
+		}
+	}
+	if device != "" {
+		if !allowDevice {
+			return Scope{}, errors.New("device is not available here; use group")
+		}
+		k, err := ParseDeviceKey(device)
+		if err != nil {
+			return Scope{}, err
+		}
+		return Scope{Device: &k}, nil
+	}
+	if group == "" {
+		if len(groups) > 0 {
+			return Scope{Group: groups[0].Name}, nil
+		}
+		return Scope{}, nil
+	}
+	if strings.EqualFold(group, AllProfiles) {
+		return Scope{}, nil
+	}
+	for _, g := range groups {
+		if strings.EqualFold(g.Name, group) {
+			return Scope{Group: g.Name}, nil
+		}
+	}
+	return Scope{}, fmt.Errorf("no profile group is named %q", group)
+}
+
 // overviewData is the overview page and its htmx panel.
 type overviewData struct {
 	Period    Period
-	Device    *DeviceKey
-	DeviceSel string
+	Scope     scopeView
+	Groups    []Group
 	Services  []ServiceSummary
+	Profiles  []ProfileSummary
 	Devices   []DeviceSummary
 	Totals    ServiceSummary
 	UsedMonth int
@@ -125,13 +213,18 @@ type overviewData struct {
 
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	device, err := deviceParam(r)
+	groups, err := s.store.Groups(ctx)
+	if err != nil {
+		s.storeError(w, r, err)
+		return
+	}
+	sc, err := scopeParam(r, groups, true)
 	if err != nil {
 		s.htmlError(w, r, http.StatusBadRequest, err.Error())
 		return
 	}
 	p := PeriodAt(s.now().In(s.loc))
-	services, err := s.store.ServiceSummaries(ctx, p, device)
+	services, err := s.store.ServiceSummaries(ctx, p, sc)
 	if err != nil {
 		s.storeError(w, r, err)
 		return
@@ -141,9 +234,14 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		s.storeError(w, r, err)
 		return
 	}
-	data := overviewData{Period: p, Device: device, Services: services, Devices: devices}
-	if device != nil {
-		data.DeviceSel = device.String()
+	profiles, err := s.profileSummaries(ctx, p, groups)
+	if err != nil {
+		s.storeError(w, r, err)
+		return
+	}
+	data := overviewData{
+		Period: p, Scope: newScopeView(sc, groups), Groups: groups,
+		Services: services, Profiles: profiles, Devices: devices,
 	}
 	for _, sv := range services {
 		data.Totals.WeekMinutes += sv.WeekMinutes
@@ -159,9 +257,28 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, "overview", "services-panel", data)
 }
 
+// profileSummaries returns the profiles with their usage and the groups
+// each belongs to.
+func (s *Server) profileSummaries(ctx context.Context, p Period, groups []Group) ([]ProfileSummary, error) {
+	profiles, err := s.store.ProfileSummaries(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	for i := range profiles {
+		for _, g := range groups {
+			if slices.ContainsFunc(g.Profiles, func(m Profile) bool { return m.ID == profiles[i].ID }) {
+				profiles[i].Groups = append(profiles[i].Groups, g.Name)
+			}
+		}
+	}
+	return profiles, nil
+}
+
 // serviceData is the service detail page and its htmx history panel.
 type serviceData struct {
 	Period    Period
+	Scope     scopeView
+	Groups    []Group
 	Summary   ServiceSummary
 	MedianGap float64
 	HasMedian bool
@@ -194,9 +311,19 @@ func (s *Server) handleService(w http.ResponseWriter, r *http.Request) {
 		s.storeError(w, r, err)
 		return
 	}
+	groups, err := s.store.Groups(ctx)
+	if err != nil {
+		s.storeError(w, r, err)
+		return
+	}
+	sc, err := scopeParam(r, groups, false)
+	if err != nil {
+		s.htmlError(w, r, http.StatusBadRequest, err.Error())
+		return
+	}
 	p := PeriodAt(s.now().In(s.loc))
-	data := serviceData{Period: p, Days: days, Ranges: historyRanges}
-	summaries, err := s.store.ServiceSummaries(ctx, p, nil)
+	data := serviceData{Period: p, Scope: newScopeView(sc, groups), Groups: groups, Days: days, Ranges: historyRanges}
+	summaries, err := s.store.ServiceSummaries(ctx, p, sc)
 	if err != nil {
 		s.storeError(w, r, err)
 		return
@@ -206,7 +333,7 @@ func (s *Server) handleService(w http.ResponseWriter, r *http.Request) {
 			data.Summary = sv
 		}
 	}
-	data.History, err = s.store.DailyMetrics(ctx, id, p.Today.AddDate(0, 0, 1-days), p.Today, nil)
+	data.History, err = s.store.DailyMetrics(ctx, id, p.Today.AddDate(0, 0, 1-days), p.Today, sc)
 	if err != nil {
 		s.storeError(w, r, err)
 		return
@@ -218,7 +345,7 @@ func (s *Server) handleService(w http.ResponseWriter, r *http.Request) {
 			data.Active = append(data.Active, d)
 		}
 	}
-	if data.MedianGap, data.HasMedian, err = s.store.MedianDaysBetweenUse(ctx, id); err != nil {
+	if data.MedianGap, data.HasMedian, err = s.store.MedianDaysBetweenUse(ctx, id, sc); err != nil {
 		s.storeError(w, r, err)
 		return
 	}
@@ -226,30 +353,65 @@ func (s *Server) handleService(w http.ResponseWriter, r *http.Request) {
 		s.storeError(w, r, err)
 		return
 	}
-	if data.Sessions, err = s.store.RecentSessions(ctx, &id, defaultSessionLimit); err != nil {
+	if data.Sessions, err = s.store.RecentSessions(ctx, &id, defaultSessionLimit, sc.Group); err != nil {
 		s.storeError(w, r, err)
 		return
 	}
 	s.render(w, r, "service", "history-panel", data)
 }
 
+// apiScope is how API responses name their scope: Scope is "group", "all"
+// or "device", with Group or Device set to match.
+type apiScope struct {
+	Scope  string  `json:"scope"`
+	Group  *string `json:"group"`
+	Device *string `json:"device"`
+}
+
+func newAPIScope(sc Scope) apiScope {
+	switch {
+	case sc.Device != nil:
+		k := sc.Device.String()
+		return apiScope{Scope: "device", Device: &k}
+	case sc.Group != "":
+		g := sc.Group
+		return apiScope{Scope: "group", Group: &g}
+	}
+	return apiScope{Scope: AllProfiles}
+}
+
+// apiScopeParam reads the scope of an API request, writing the error
+// response itself when it fails.
+func (s *Server) apiScopeParam(w http.ResponseWriter, r *http.Request, allowDevice bool) (Scope, bool) {
+	groups, err := s.store.Groups(r.Context())
+	if err != nil {
+		apiStoreError(w, err)
+		return Scope{}, false
+	}
+	sc, err := scopeParam(r, groups, allowDevice)
+	if err != nil {
+		apiError(w, http.StatusBadRequest, err.Error())
+		return Scope{}, false
+	}
+	return sc, true
+}
+
 // apiServicesResponse is GET /api/services.
 type apiServicesResponse struct {
-	Today      string           `json:"today"`
-	WeekStart  string           `json:"week_start"`
-	MonthStart string           `json:"month_start"`
-	Device     *string          `json:"device"`
-	Services   []ServiceSummary `json:"services"`
+	Today      string `json:"today"`
+	WeekStart  string `json:"week_start"`
+	MonthStart string `json:"month_start"`
+	apiScope
+	Services []ServiceSummary `json:"services"`
 }
 
 func (s *Server) handleAPIServices(w http.ResponseWriter, r *http.Request) {
-	device, err := deviceParam(r)
-	if err != nil {
-		apiError(w, http.StatusBadRequest, err.Error())
+	sc, ok := s.apiScopeParam(w, r, true)
+	if !ok {
 		return
 	}
 	p := PeriodAt(s.now().In(s.loc))
-	services, err := s.store.ServiceSummaries(r.Context(), p, device)
+	services, err := s.store.ServiceSummaries(r.Context(), p, sc)
 	if err != nil {
 		apiStoreError(w, err)
 		return
@@ -261,21 +423,18 @@ func (s *Server) handleAPIServices(w http.ResponseWriter, r *http.Request) {
 		Today:      p.Today.Format(dateLayout),
 		WeekStart:  p.WeekStart.Format(dateLayout),
 		MonthStart: p.MonthStart.Format(dateLayout),
+		apiScope:   newAPIScope(sc),
 		Services:   nonNil(services),
-	}
-	if device != nil {
-		k := device.String()
-		resp.Device = &k
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
 // apiMetricsResponse is GET /api/services/{id}/metrics.
 type apiMetricsResponse struct {
-	Service Service     `json:"service"`
-	Start   string      `json:"start"`
-	End     string      `json:"end"`
-	Device  *string     `json:"device"`
+	Service Service `json:"service"`
+	Start   string  `json:"start"`
+	End     string  `json:"end"`
+	apiScope
 	Metrics []DayMetric `json:"metrics"`
 }
 
@@ -313,9 +472,8 @@ func (s *Server) handleAPIMetrics(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "range must be at most "+strconv.Itoa(maxMetricsDays)+" days")
 		return
 	}
-	device, err := deviceParam(r)
-	if err != nil {
-		apiError(w, http.StatusBadRequest, err.Error())
+	sc, ok := s.apiScopeParam(w, r, true)
+	if !ok {
 		return
 	}
 	service, err := s.store.Service(ctx, id)
@@ -323,7 +481,7 @@ func (s *Server) handleAPIMetrics(w http.ResponseWriter, r *http.Request) {
 		apiStoreError(w, err)
 		return
 	}
-	metrics, err := s.store.DailyMetrics(ctx, id, start, end, device)
+	metrics, err := s.store.DailyMetrics(ctx, id, start, end, sc)
 	if err != nil {
 		apiStoreError(w, err)
 		return
@@ -331,14 +489,10 @@ func (s *Server) handleAPIMetrics(w http.ResponseWriter, r *http.Request) {
 	for i := range metrics {
 		metrics[i].TotalMinutes = roundMinutes(metrics[i].TotalMinutes)
 	}
-	resp := apiMetricsResponse{
-		Service: service, Start: start.Format(dateLayout), End: end.Format(dateLayout), Metrics: metrics,
-	}
-	if device != nil {
-		k := device.String()
-		resp.Device = &k
-	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, apiMetricsResponse{
+		Service: service, Start: start.Format(dateLayout), End: end.Format(dateLayout),
+		apiScope: newAPIScope(sc), Metrics: metrics,
+	})
 }
 
 func (s *Server) handleAPISessions(w http.ResponseWriter, r *http.Request) {
@@ -366,7 +520,11 @@ func (s *Server) handleAPISessions(w http.ResponseWriter, r *http.Request) {
 		}
 		serviceID = &id
 	}
-	sessions, err := s.store.RecentSessions(ctx, serviceID, limit)
+	sc, ok := s.apiScopeParam(w, r, false)
+	if !ok {
+		return
+	}
+	sessions, err := s.store.RecentSessions(ctx, serviceID, limit, sc.Group)
 	if err != nil {
 		apiStoreError(w, err)
 		return
@@ -374,7 +532,42 @@ func (s *Server) handleAPISessions(w http.ResponseWriter, r *http.Request) {
 	for i := range sessions {
 		sessions[i].Minutes = roundMinutes(sessions[i].Minutes)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"sessions": sessions})
+	writeJSON(w, http.StatusOK, struct {
+		apiScope
+		Sessions []Session `json:"sessions"`
+	}{newAPIScope(sc), sessions})
+}
+
+func (s *Server) handleAPIGroups(w http.ResponseWriter, r *http.Request) {
+	groups, err := s.store.Groups(r.Context())
+	if err != nil {
+		apiStoreError(w, err)
+		return
+	}
+	var def *string
+	if len(groups) > 0 {
+		def = &groups[0].Name
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"default": def, "groups": nonNil(groups)})
+}
+
+func (s *Server) handleAPIProfiles(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	groups, err := s.store.Groups(ctx)
+	if err != nil {
+		apiStoreError(w, err)
+		return
+	}
+	profiles, err := s.profileSummaries(ctx, PeriodAt(s.now().In(s.loc)), groups)
+	if err != nil {
+		apiStoreError(w, err)
+		return
+	}
+	for i := range profiles {
+		pr := &profiles[i]
+		pr.TotalMinutes, pr.WeekMinutes, pr.MonthMinutes = roundMinutes(pr.TotalMinutes), roundMinutes(pr.WeekMinutes), roundMinutes(pr.MonthMinutes)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"profiles": nonNil(profiles)})
 }
 
 func (s *Server) handleAPIDevices(w http.ResponseWriter, r *http.Request) {
@@ -462,19 +655,6 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(append(b, '\n'))
-}
-
-// deviceParam reads the optional ?device=account:device_name filter.
-func deviceParam(r *http.Request) (*DeviceKey, error) {
-	v := r.URL.Query().Get("device")
-	if v == "" {
-		return nil, nil
-	}
-	k, err := ParseDeviceKey(v)
-	if err != nil {
-		return nil, err
-	}
-	return &k, nil
 }
 
 // pathID reads a positive {id} path segment.

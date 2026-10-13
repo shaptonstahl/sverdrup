@@ -19,8 +19,8 @@ def watching(start, minutes, every, domain, device):
 
 
 def test_logs_flow_through_to_metrics(nextdns, db_path):
-    # Two accounts; the family account also owns kids99, which is not listed.
-    nextdns.accounts = {API_KEY: {PROFILE_ID}, FAMILY_KEY: {"fam001", "kids99"}}
+    # Two accounts, each collecting every profile its key can see.
+    nextdns.accounts = {API_KEY: {PROFILE_ID}, FAMILY_KEY: {"fam001"}}
     nextdns.logs = {
         PROFILE_ID: (
             # Netflix in the living room, 19:30-20:30 New York time (EST, UTC-5)
@@ -36,15 +36,12 @@ def test_logs_flow_through_to_metrics(nextdns, db_path):
         # Netflix on the family profile, 20:00-20:20 local, seen only at the
         # router: NextDNS logs no device at all
         "fam001": watching(utc(2026, 3, 2, 1, 0), 20, 10, "netflix.com", None),
-        "kids99": watching(utc(2026, 3, 2, 1, 0), 60, 5, "netflix.com", "Tablet"),
     }
     env = {
         "NEXTDNS_API_URL": nextdns.url,
         "SVERDRUP_ACCOUNTS": "home,family",
         "NEXTDNS_HOME_API_KEY": API_KEY,
-        "NEXTDNS_HOME_PROFILES": PROFILE_ID,
         "NEXTDNS_FAMILY_API_KEY": FAMILY_KEY,
-        "NEXTDNS_FAMILY_PROFILES": "fam001",
         "DB_PATH": db_path,
         "TZ": "America/New_York",
         "SESSION_GAP_MINUTES": "15",
@@ -150,3 +147,65 @@ def test_logs_flow_through_to_metrics(nextdns, db_path):
         ("youtube", "home", "Phone", "2026-03-02", 15.0),
         ("netflix", "home", "TV", "2026-03-02", 45.0),
     ]
+
+
+def test_discovered_profiles_flow_through_to_group_metrics(nextdns, db_path):
+    # No profile lists: every profile each key can see is collected. HapLan is
+    # every profile except Julie's, across both accounts.
+    nextdns.accounts = {API_KEY: {PROFILE_ID}, FAMILY_KEY: {"fam001", "jul001"}}
+    nextdns.names = {PROFILE_ID: "Stephen", "fam001": "Den", "jul001": "Julie"}
+    nextdns.logs = {
+        # Netflix 19:30-20:30 New York time in the home account, and 20:00-20:20
+        # in the family account's den: one HapLan session of 60 minutes.
+        PROFILE_ID: watching(utc(2026, 3, 2, 0, 30), 60, 5, "netflix.com", "TV"),
+        "fam001": watching(utc(2026, 3, 2, 1, 0), 20, 10, "netflix.com", None),
+        # Julie watches 20:15-21:45 in the family account: never HapLan's.
+        "jul001": watching(utc(2026, 3, 2, 1, 15), 90, 5, "netflix.com", "iPad"),
+    }
+    env = {
+        "NEXTDNS_API_URL": nextdns.url,
+        "SVERDRUP_ACCOUNTS": "home,family",
+        "NEXTDNS_HOME_API_KEY": API_KEY,
+        "NEXTDNS_FAMILY_API_KEY": FAMILY_KEY,
+        "SVERDRUP_GROUPS": "HapLan",
+        "SVERDRUP_GROUP_HAPLAN_EXCLUDE": "julie",
+        "DB_PATH": db_path,
+        "TZ": "America/New_York",
+    }
+
+    assert collector.main(env) == 0
+    assert processor.main(env) == 0
+
+    conn = connect(db_path)
+    try:
+        profiles = conn.execute(
+            "SELECT profile_id, account, name FROM profiles ORDER BY profile_id"
+        ).fetchall()
+        members = conn.execute(
+            "SELECT profile_id FROM group_members WHERE group_name = 'HapLan'"
+            " ORDER BY profile_id"
+        ).fetchall()
+        group = conn.execute(
+            "SELECT s.service_code, m.date, m.total_minutes, m.session_count"
+            " FROM group_metrics m JOIN services s ON s.id = m.service_id"
+            " WHERE m.group_name = 'HapLan'"
+        ).fetchall()
+        group_sessions = conn.execute(
+            "SELECT profile_ids, session_length_minutes FROM group_sessions"
+        ).fetchall()
+        family_minutes = conn.execute(
+            "SELECT SUM(session_length_minutes) FROM sessions WHERE account = 'family'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert profiles == [
+        ("abc123", "home", "Stephen"),
+        ("fam001", "family", "Den"),
+        ("jul001", "family", "Julie"),
+    ]
+    assert members == [("abc123",), ("fam001",)]
+    assert group == [("netflix", "2026-03-01", 60.0, 1)]
+    assert group_sessions == [('["abc123", "fam001"]', 60.0)]
+    # The family account's household view merges Julie's viewing with the den's.
+    assert family_minutes == 105.0

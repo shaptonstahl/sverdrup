@@ -23,9 +23,11 @@ The sverdrup (Sv) is the oceanographers' unit of volume transport in ocean curre
 
 Sverdrup is a containerized system with three components:
 
-1. **Collector** (Python) — Fetches DNS logs from the chosen profiles of one or more NextDNS accounts, backfills historical data on first run, then polls incrementally
-2. **Processor** (Python) — Sessionizes DNS queries into viewing sessions and computes metrics
-3. **Dashboard** (Go + htmx) — Lightweight web UI, mobile-friendly, shows time-per-service and usage frequency
+1. **Collector** (Python) — Fetches DNS logs from every profile one or more NextDNS accounts can see, backfills historical data on first run and for each new profile, then polls incrementally
+2. **Processor** (Python) — Sessionizes DNS queries into viewing sessions and computes metrics per profile, per device, and per profile group
+3. **Dashboard** (Go + htmx) — Lightweight web UI, mobile-friendly, shows time-per-service and usage frequency for a profile group, all profiles, or one device
+
+**Profile groups** aggregate NextDNS profiles into named views, such as a household that excludes other people sharing the account: `SVERDRUP_GROUPS=HapLan` with `SVERDRUP_GROUP_HAPLAN_EXCLUDE=ce2122,887843,69aa36` (the profile IDs of Julie, Cumberland and calibration). The first group is the dashboard's default. See [DEPLOYMENT.md](DEPLOYMENT.md#profiles-and-groups).
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design, including data, infrastructure, and security/trust layers.
 
@@ -39,7 +41,7 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed setup instructions.
 # Copy the Compose example (git-ignored once copied) and point it at this clone
 cp docker-compose.example.yml docker-compose.yml   # then set build: .
 
-# Create .env with your NextDNS accounts, keys and profiles
+# Create .env with your NextDNS accounts, keys and any profile groups
 cp .env.example .env   # then edit
 
 # Start the container

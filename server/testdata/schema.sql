@@ -12,6 +12,15 @@ CREATE TABLE IF NOT EXISTS services (
     domains      TEXT NOT NULL  -- JSON array of DNS domains
 );
 
+-- Every profile the collector collects, with its NextDNS name, so groups and
+-- the dashboard can name profiles.
+CREATE TABLE IF NOT EXISTS profiles (
+    profile_id TEXT PRIMARY KEY,
+    account    TEXT NOT NULL,  -- account whose key collects it
+    name       TEXT,           -- NextDNS profile name; NULL when not discovered
+    updated_at TEXT NOT NULL   -- ISO 8601 UTC, when the collector last saw it
+);
+
 CREATE TABLE IF NOT EXISTS queries (
     id             INTEGER PRIMARY KEY,
     account        TEXT NOT NULL,  -- short name from SVERDRUP_ACCOUNTS
@@ -85,4 +94,45 @@ CREATE TABLE IF NOT EXISTS device_metrics (
     session_count INTEGER NOT NULL,
     last_seen     TEXT NOT NULL,
     UNIQUE (service_id, account, device_name, date)
+);
+
+-- Profile groups from SVERDRUP_GROUPS, resolved against the known profiles on
+-- each processor run, and the same derivations per group: one session per
+-- service across all of a group's profiles, so nothing within a group is
+-- counted twice.
+CREATE TABLE IF NOT EXISTS profile_groups (
+    name     TEXT PRIMARY KEY,  -- as written in SVERDRUP_GROUPS
+    position INTEGER NOT NULL,  -- order in SVERDRUP_GROUPS; the first is the default
+    rule     TEXT NOT NULL,     -- 'include' (only entries) or 'exclude' (all but entries)
+    entries  TEXT NOT NULL      -- JSON array of profile IDs or names as configured
+);
+
+CREATE TABLE IF NOT EXISTS group_members (
+    group_name TEXT NOT NULL REFERENCES profile_groups(name),
+    profile_id TEXT NOT NULL,
+    PRIMARY KEY (group_name, profile_id)
+);
+
+CREATE TABLE IF NOT EXISTS group_sessions (
+    id                     INTEGER PRIMARY KEY,
+    service_id             INTEGER NOT NULL REFERENCES services(id),
+    group_name             TEXT NOT NULL,
+    profile_ids            TEXT NOT NULL,  -- JSON array of profiles the session touched
+    device_names           TEXT NOT NULL,  -- JSON array of device names it touched
+    start_time             TEXT NOT NULL,
+    end_time               TEXT NOT NULL,
+    session_length_minutes REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_group_sessions_group_start
+    ON group_sessions(group_name, service_id, start_time);
+
+CREATE TABLE IF NOT EXISTS group_metrics (
+    id            INTEGER PRIMARY KEY,
+    service_id    INTEGER NOT NULL REFERENCES services(id),
+    group_name    TEXT NOT NULL,
+    date          TEXT NOT NULL,  -- local calendar date, YYYY-MM-DD
+    total_minutes REAL NOT NULL,
+    session_count INTEGER NOT NULL,
+    last_seen     TEXT NOT NULL,
+    UNIQUE (service_id, group_name, date)
 );

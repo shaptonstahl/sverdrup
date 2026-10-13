@@ -2,6 +2,10 @@
 {{define "content"}}
 <p class="crumbs"><a href="/">Overview</a></p>
 <h1>{{.Summary.Name}}</h1>
+{{if .Groups}}<nav class="ranges" aria-label="Profiles">
+  {{range .Groups}}<a href="/services/{{$.Summary.ID}}?group={{.Name}}"{{if eq .Name $.Scope.Group}} aria-current="true"{{end}}>{{.Name}}</a>
+  {{end}}<a href="/services/{{$.Summary.ID}}?group=all"{{if eq $.Scope.View "all"}} aria-current="true"{{end}}>All profiles</a>
+</nav>{{end}}
 <div class="cards">
   <div class="card"><div class="label">This week</div><div class="value">{{minutes .Summary.WeekMinutes}}</div><div class="muted">{{plural .Summary.WeekSessions "session"}}</div></div>
   <div class="card"><div class="label">This month</div><div class="value">{{minutes .Summary.MonthMinutes}}</div><div class="muted">{{plural .Summary.MonthSessions "session"}}</div></div>
@@ -12,6 +16,7 @@
 <section>
   <h2>Devices</h2>
   {{if .Devices}}
+  {{if .Scope.Group}}<p class="hint">Devices in every profile, not only {{.Scope.Group}}'s.</p>{{end}}
   <div class="scroll"><table>
     <thead><tr><th>Device</th><th class="num">This week</th><th class="num">This month</th><th class="num wide">All time</th><th class="wide">Last seen</th></tr></thead>
     <tbody>
@@ -40,7 +45,7 @@
       <td class="wide">{{localTime .EndTime}}</td>
       <td class="num">{{minutes .Minutes}}</td>
       <td>{{join .DeviceNames}}</td>
-      <td class="wide">{{.Account}}: {{join .ProfileIDs}}</td>
+      <td class="wide">{{with .Account}}{{.}}: {{end}}{{join .ProfileNames}}</td>
     </tr>
     {{end}}
     </tbody>
@@ -55,8 +60,8 @@
 <section id="history-panel">
   <h2>Daily viewing</h2>
   <nav class="ranges" aria-label="History range">
-    {{range .Ranges}}<a href="/services/{{$.Summary.ID}}?days={{.}}"{{if eq . $.Days}} aria-current="true"{{end}}
-       hx-get="/services/{{$.Summary.ID}}?days={{.}}" hx-target="#history-panel" hx-swap="outerHTML" hx-push-url="true">{{.}} days</a>
+    {{range .Ranges}}<a href="/services/{{$.Summary.ID}}?days={{.}}{{with $.Scope.Param}}&amp;group={{.}}{{end}}"{{if eq . $.Days}} aria-current="true"{{end}}
+       hx-get="/services/{{$.Summary.ID}}?days={{.}}{{with $.Scope.Param}}&amp;group={{.}}{{end}}" hx-target="#history-panel" hx-swap="outerHTML" hx-push-url="true">{{.}} days</a>
     {{end}}
   </nav>
   <svg class="spark" viewBox="0 0 {{sparkWidth .History}} {{sparkHeight}}" preserveAspectRatio="none" role="img"

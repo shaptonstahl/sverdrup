@@ -71,12 +71,13 @@ func TestOverviewPage(t *testing.T) {
 	wantStatus(t, rec, http.StatusOK)
 	body := rec.Body.String()
 	wantContains(t, body,
-		"<!doctype html>", `src="/static/htmx.min.js?v=`, `href="/static/style.css?v=`, "Whole household",
+		"<!doctype html>", `src="/static/htmx.min.js?v=`, `href="/static/style.css?v=`, "All profiles",
 		`<a href="/services/1">Netflix</a>`, `<a href="/services/3">YouTube</a>`,
 		"1h 40m",         // household this week: 90 + 10 minutes
 		"2h 25m",         // household this month: 135 + 10 minutes
 		"from Mon 5 Oct", // week start
-		`<option value="home:phone:a">phone:a (home)</option>`,
+		`<option value="device:home:phone:a">phone:a (home)</option>`,
+		`<option value="all" selected>All profiles</option>`,
 		`href="/?device=home%3aLiving%20Room%20TV"`,
 		"Tue 6 Oct 2026 22:00", // Netflix last seen, in the server zone
 	)
@@ -90,7 +91,7 @@ func TestOverviewDeviceFilter(t *testing.T) {
 	rec := get(t, h, "/?device=home:Living+Room+TV")
 	wantStatus(t, rec, http.StatusOK)
 	wantContains(t, rec.Body.String(),
-		`<option value="home:Living Room TV" selected>`,
+		`<option value="device:home:Living Room TV" selected>`,
 		"1h 45m", // Netflix on that TV this month: 45 + 60
 	)
 
@@ -104,9 +105,14 @@ func TestOverviewDeviceFilter(t *testing.T) {
 
 	restore := get(t, h, "/?device=home:phone:a", "HX-Request", "true", "HX-History-Restore-Request", "true")
 	wantStatus(t, restore, http.StatusOK)
-	wantContains(t, restore.Body.String(), "<!doctype html>", `<option value="home:phone:a" selected>`, `<section id="services-panel">`)
+	wantContains(t, restore.Body.String(), "<!doctype html>", `<option value="device:home:phone:a" selected>`, `<section id="services-panel">`)
 
-	wantStatus(t, get(t, h, "/?device=nocolon"), http.StatusBadRequest)
+	// The selector sends view=; it picks the same device.
+	wantContains(t, get(t, h, "/?view=device:home:phone:a").Body.String(), `<option value="device:home:phone:a" selected>`)
+
+	for _, target := range []string{"/?device=nocolon", "/?view=device:nocolon", "/?view=bogus", "/?view=all&device=home:phone:a", "/?group=HapLan"} {
+		wantStatus(t, get(t, h, target), http.StatusBadRequest)
+	}
 }
 
 func TestOverviewEscapesDeviceNames(t *testing.T) {
@@ -130,7 +136,7 @@ func TestServicePage(t *testing.T) {
 		"2h 35m", // all time: 155 minutes
 		`<svg class="spark" viewBox="0 0 120 40"`, // 30 days of 4 units
 		"Tue 6 Oct 2026", "1h 30m", // daily row for 10-06
-		"Living Room TV, phone:a", "home: p1, p2", // recent session devices and profiles
+		"Living Room TV, phone:a", "home: p1, p2", // recent session devices and profiles, by ID until named
 		`aria-current="true"`,
 	)
 	if strings.Contains(body, "Spotify") {
@@ -167,7 +173,8 @@ func TestAPIServices(t *testing.T) {
 	rec := get(t, h, "/api/services")
 	wantStatus(t, rec, http.StatusOK)
 	resp := decode[apiServicesResponse](t, rec)
-	if resp.Today != "2026-10-07" || resp.WeekStart != "2026-10-05" || resp.MonthStart != "2026-10-01" || resp.Device != nil {
+	if resp.Today != "2026-10-07" || resp.WeekStart != "2026-10-05" || resp.MonthStart != "2026-10-01" ||
+		resp.Device != nil || resp.Group != nil || resp.Scope != "all" {
 		t.Errorf("period = %+v", resp)
 	}
 	if len(resp.Services) != 3 || resp.Services[0].Code != "netflix" || resp.Services[0].TotalMinutes != 155 {
@@ -186,7 +193,7 @@ func TestAPIServices(t *testing.T) {
 	}
 
 	dev := decode[apiServicesResponse](t, get(t, h, "/api/services?device=family:Living%20Room%20TV"))
-	if dev.Device == nil || *dev.Device != "family:Living Room TV" || dev.Services[0].Code != "spotify" {
+	if dev.Scope != "device" || dev.Device == nil || *dev.Device != "family:Living Room TV" || dev.Services[0].Code != "spotify" {
 		t.Errorf("device services = %+v", dev)
 	}
 	wantStatus(t, get(t, h, "/api/services?device=bad"), http.StatusBadRequest)
@@ -295,7 +302,7 @@ func TestNoDataYet(t *testing.T) {
 	page := get(t, h, "/")
 	wantStatus(t, page, http.StatusServiceUnavailable)
 	wantContains(t, page.Body.String(), "No data yet")
-	for _, target := range []string{"/api/services", "/api/sessions", "/api/services/1/metrics", "/api/devices"} {
+	for _, target := range []string{"/api/services", "/api/sessions", "/api/services/1/metrics", "/api/devices", "/api/groups", "/api/profiles"} {
 		rec := get(t, h, target)
 		wantStatus(t, rec, http.StatusServiceUnavailable)
 		if e := decode[map[string]string](t, rec); !strings.HasPrefix(e["error"], "no data yet") {

@@ -5,7 +5,7 @@
 ### Prerequisites
 - Docker and Docker Compose
 - NextDNS account with API access enabled
-- For each NextDNS account: its API key, and the IDs of the profiles you want collected
+- For each NextDNS account: its API key (every profile the key can see is collected)
 
 ### Environment Setup
 
@@ -19,12 +19,15 @@ cp .env.example .env
 # Short names for your NextDNS accounts (letters, digits, underscores)
 SVERDRUP_ACCOUNTS=home,family
 
-# Per account NAME, uppercased: the account's API key and the profiles to collect.
-# Profiles the account owns but you leave out are not collected.
+# Per account NAME, uppercased: the account's API key. Every profile the key
+# can see is collected.
 NEXTDNS_HOME_API_KEY=your_home_account_api_key
-NEXTDNS_HOME_PROFILES=abc123,def456
 NEXTDNS_FAMILY_API_KEY=your_family_account_api_key
-NEXTDNS_FAMILY_PROFILES=fed321
+
+# Optional profile groups; the first is the dashboard's default view.
+# HapLan: all but ce2122 (Julie), 887843 (Cumberland), 69aa36 (calibration)
+SVERDRUP_GROUPS=HapLan
+SVERDRUP_GROUP_HAPLAN_EXCLUDE=ce2122,887843,69aa36
 
 # Optional (defaults shown)
 NEXTDNS_API_URL=https://api.nextdns.io
@@ -37,31 +40,52 @@ DASHBOARD_PORT=8080
 
 `TZ` is an IANA zone such as `America/New_York`; it decides where one day's metrics end. `COLLECTOR_INTERVAL` and `PROCESSOR_INTERVAL` are minutes that cron can repeat evenly: under 60 they must divide 60 (for example 5, 15 or 30); from 60 up they must be whole hours that divide 24 (60, 120, 180, 240, 360, 480, 720 or 1440). The container exits at startup, naming the variable, for any other value. The collector checks this configuration at startup and names every variable that is missing or malformed. The older `NEXTDNS_API_KEY` and `NEXTDNS_PROFILE_ID` variables are no longer read; move them into an account.
 
+### Profiles and groups
+
+Each collector run asks NextDNS which profiles every account's key can see (`GET /profiles`) and collects them all, storing each profile's NextDNS name. A profile that appears later is backfilled with every log NextDNS still retains, then polled like the rest. When two keys can see the same profile, the first account in `SVERDRUP_ACCOUNTS` collects it.
+
+`NEXTDNS_<NAME>_PROFILES` is no longer read. If an older `.env` still sets it, the collector logs one warning at startup and collects every profile anyway; delete the line when convenient. If listing an account's profiles fails, that account is skipped for the run and retried on the next.
+
+Groups aggregate profiles into named views, configured with `SVERDRUP_GROUPS` (comma-separated names: a letter, then letters, digits or underscores; `all` is reserved) and, for each group `NAME` uppercased, exactly one of:
+
+- `SVERDRUP_GROUP_<NAME>_PROFILES`: the profiles in the group
+- `SVERDRUP_GROUP_<NAME>_EXCLUDE`: the profiles left out of a group of every profile; profiles discovered later join it automatically
+
+Entries are profile IDs or NextDNS profile names (names ignore case; a name shared by two profiles matches both). Prefer IDs: a profile renamed in NextDNS keeps its ID. For example, a household group of every profile except two other households and a test profile:
+
+```
+SVERDRUP_GROUPS=HapLan
+# ce2122 (Julie), 887843 (Cumberland), 69aa36 (calibration)
+SVERDRUP_GROUP_HAPLAN_EXCLUDE=ce2122,887843,69aa36
+```
+
+The processor reads the groups on each run. An exclusion group never takes in a profile it might exclude: when one of its entries matches no known profile, or it has an entry that is not a profile ID while some profile has no recorded name yet, the processor logs an error naming the entry or profile to `/var/log/sverdrup-process.log` and leaves that group's sessions, metrics and members as the last run that resolved it left them; other groups and per-profile metrics are rebuilt as usual. An entry of a `_PROFILES` group that matches no profile only logs a warning. The processor refuses to run, naming the variable, when a group is malformed. The dashboard and API show the first group by default, offer the others and "All profiles", and pick up a change after the next processor run (restart the container to load a changed `.env`). `GET /api/groups` shows how each group resolved.
+
 ### Run with Docker Compose (Miracle / Synology layout)
 
-The repository ships `docker-compose.example.yml`, not a `docker-compose.yml`. A deployment keeps its own `docker-compose.yml`, `.env` and `data/` in a parent project directory, with the git clone in a `srv/` subfolder beneath it. A `git pull` then never touches your configuration or your database. On Miracle the project directory is `/volume1/docker/sverdrup`:
+The repository ships `docker-compose.example.yml`, not a `docker-compose.yml`. A deployment keeps its own `docker-compose.yml`, `.env` and `data/` in a parent project directory, with the git clone in a `src/` subfolder beneath it. A `git pull` then never touches your configuration or your database. On Miracle the project directory is `/volume1/docker/sverdrup`:
 
 ```
 /volume1/docker/sverdrup/
-  docker-compose.yml   # copied from srv/docker-compose.example.yml
-  .env                 # copied from srv/.env.example
+  docker-compose.yml   # copied from src/docker-compose.example.yml
+  .env                 # copied from src/.env.example
   data/                # SQLite database, bind-mounted at /data
-  srv/                 # git clone of sverdrup
+  src/                 # git clone of sverdrup
 ```
 
-1. Clone the repository into the `srv` subfolder:
+1. Clone the repository into the `src` subfolder:
    ```bash
    mkdir -p /volume1/docker/sverdrup
    cd /volume1/docker/sverdrup
-   git clone https://github.com/shaptonstahl/sverdrup.git srv
+   git clone https://github.com/shaptonstahl/sverdrup.git src
    ```
 2. Copy the Compose example up into the project directory:
    ```bash
-   cp srv/docker-compose.example.yml docker-compose.yml
+   cp src/docker-compose.example.yml docker-compose.yml
    ```
-3. Copy the environment example and fill in your NextDNS accounts, API keys, profile IDs and `TZ` (see [Environment Setup](#environment-setup)):
+3. Copy the environment example and fill in your NextDNS accounts, API keys, any profile groups and `TZ` (see [Environment Setup](#environment-setup)):
    ```bash
-   cp srv/.env.example .env
+   cp src/.env.example .env
    chmod 600 .env
    ```
 4. Create the data directory outside the repo:
@@ -78,10 +102,10 @@ Compose reads `.env` in the project directory both to fill `${DASHBOARD_PORT}` i
 To update to the latest code, pull the clone and rebuild:
 
 ```bash
-cd /volume1/docker/sverdrup && git -C srv pull && docker compose up -d --build
+cd /volume1/docker/sverdrup && git -C src pull && docker compose up -d --build
 ```
 
-For local development inside a clone, copy `docker-compose.example.yml` to `docker-compose.yml` in the repo root (it is git-ignored), change `build: ./srv` to `build: .`, and keep `.env` next to it; the database then lands in the repo's git-ignored `data/`.
+For local development inside a clone, copy `docker-compose.example.yml` to `docker-compose.yml` in the repo root (it is git-ignored), change `build: ./src` to `build: .`, and keep `.env` next to it; the database then lands in the repo's git-ignored `data/`.
 
 Or without Compose:
 
@@ -111,7 +135,6 @@ cd sverdrup
 ```bash
 export SVERDRUP_ACCOUNTS="home"
 export NEXTDNS_HOME_API_KEY="your_key"
-export NEXTDNS_HOME_PROFILES="your_profile_id"
 export DB_PATH="$PWD/sverdrup.db"
 ```
 
@@ -227,7 +250,8 @@ docker exec sverdrup tail -n 50 /var/log/sverdrup-process.log
 ### No data appearing
 - "No data yet" (HTTP 503) means the database or its tables do not exist yet; the collector creates them on its first scheduled run
 - Set the same `TZ` for the dashboard as for the processor: the processor's `TZ` defines each metrics day, and the dashboard's defines "today", this week (from Monday) and this month
-- Check NextDNS accounts, keys and profile IDs in `.env`; the collector log names any variable it rejects
+- Check NextDNS accounts, keys and profile IDs in `.env`; the collector log names any variable it rejects, and logs how many profiles it collects per account
+- A group showing less than expected: check `GET /api/groups` for its members and the processor log for entries that matched no profile
 - Verify collector script ran: check logs
 - Ensure SQLite database file has write permissions
 

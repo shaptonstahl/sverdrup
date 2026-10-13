@@ -140,6 +140,179 @@ func ParseDeviceKey(s string) (DeviceKey, error) {
 	return DeviceKey{Account: account, Name: name}, nil
 }
 
+// AllProfiles is the group parameter value that selects every profile.
+const AllProfiles = "all"
+
+// Scope is whose usage a view shows: one profile group (Group), one NextDNS
+// device (Device), or, with neither, every profile.
+type Scope struct {
+	Group  string
+	Device *DeviceKey
+}
+
+// metricsSource returns the daily-metrics table for the scope and the
+// filter (starting with AND) and arguments that restrict it.
+func (sc Scope) metricsSource() (table, filter string, args []any) {
+	switch {
+	case sc.Device != nil:
+		return "device_metrics", "AND m.account = ? AND m.device_name = ?", []any{sc.Device.Account, sc.Device.Name}
+	case sc.Group != "":
+		return "group_metrics", "AND m.group_name = ?", []any{sc.Group}
+	}
+	return "metrics", "", nil
+}
+
+// Profile is a NextDNS profile the collector collects.
+type Profile struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"` // NextDNS name, else the ID
+	Account string `json:"account"`
+}
+
+// Group is a profile group from SVERDRUP_GROUPS as the processor last
+// resolved it: its rule ("include" or "exclude"), its configured entries
+// (profile IDs or names), and the profiles it covers.
+type Group struct {
+	Name     string    `json:"name"`
+	Rule     string    `json:"rule"`
+	Entries  []string  `json:"entries"`
+	Profiles []Profile `json:"profiles"`
+}
+
+// isMissingTable reports whether err is SQLite's "no such table". A
+// database written before profile groups existed lacks their tables until
+// the collector or processor next runs.
+func isMissingTable(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "no such table")
+}
+
+// Groups returns the configured groups in SVERDRUP_GROUPS order, each with
+// its member profiles by name. The first is the dashboard's default.
+func (s *Store) Groups(ctx context.Context) ([]Group, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT name, rule, entries FROM profile_groups ORDER BY position")
+	if isMissingTable(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, s.classify(err)
+	}
+	defer rows.Close()
+	var out []Group
+	index := map[string]int{}
+	for rows.Next() {
+		var g Group
+		var entries string
+		if err := rows.Scan(&g.Name, &g.Rule, &entries); err != nil {
+			return nil, err
+		}
+		if g.Entries, err = jsonList(entries); err != nil {
+			return nil, fmt.Errorf("group %s entries: %w", g.Name, err)
+		}
+		g.Profiles = []Profile{}
+		index[g.Name] = len(out)
+		out = append(out, g)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, s.classify(err)
+	}
+	members, err := s.db.QueryContext(ctx, `
+		SELECT gm.group_name, gm.profile_id, COALESCE(p.name, gm.profile_id), COALESCE(p.account, '')
+		FROM group_members gm LEFT JOIN profiles p ON p.profile_id = gm.profile_id
+		ORDER BY COALESCE(p.name, gm.profile_id), gm.profile_id`)
+	if err != nil {
+		return nil, s.classify(err)
+	}
+	defer members.Close()
+	for members.Next() {
+		var group string
+		var p Profile
+		if err := members.Scan(&group, &p.ID, &p.Name, &p.Account); err != nil {
+			return nil, err
+		}
+		if i, ok := index[group]; ok {
+			out[i].Profiles = append(out[i].Profiles, p)
+		}
+	}
+	return out, s.classify(members.Err())
+}
+
+// ProfileNames maps each profile ID the collector has named to its NextDNS
+// name.
+func (s *Store) ProfileNames(ctx context.Context) (map[string]string, error) {
+	names := map[string]string{}
+	rows, err := s.db.QueryContext(ctx, "SELECT profile_id, name FROM profiles WHERE name IS NOT NULL")
+	if isMissingTable(err) {
+		return names, nil
+	}
+	if err != nil {
+		return nil, s.classify(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, err
+		}
+		names[id] = name
+	}
+	return names, s.classify(rows.Err())
+}
+
+// ProfileSummary is a profile with its usage from the per-profile metrics:
+// its share of each account-wide session, so concurrent viewing in two
+// profiles splits rather than doubles.
+type ProfileSummary struct {
+	Profile
+	Groups        []string `json:"groups"`
+	TotalMinutes  float64  `json:"total_minutes"`
+	SessionCount  int64    `json:"session_count"`
+	LastSeen      *string  `json:"last_seen"`
+	WeekMinutes   float64  `json:"week_minutes"`
+	WeekSessions  int64    `json:"week_sessions"`
+	MonthMinutes  float64  `json:"month_minutes"`
+	MonthSessions int64    `json:"month_sessions"`
+}
+
+// ProfileSummaries returns every collected profile, and every profile with
+// metrics, ordered by minutes this month, then all-time minutes, then name.
+// Groups is left for the caller to fill.
+func (s *Store) ProfileSummaries(ctx context.Context, p Period) ([]ProfileSummary, error) {
+	ids := "SELECT profile_id FROM metrics"
+	join := ""
+	name, account := "ids.profile_id", "COALESCE(MAX(m.account), '')"
+	if err := s.db.QueryRowContext(ctx, "SELECT 1 FROM profiles LIMIT 1").Scan(new(int)); err == nil || errors.Is(err, sql.ErrNoRows) {
+		ids += " UNION SELECT profile_id FROM profiles"
+		join = "LEFT JOIN profiles p ON p.profile_id = ids.profile_id"
+		name, account = "COALESCE(p.name, ids.profile_id)", "COALESCE(p.account, MAX(m.account), '')"
+	} else if !isMissingTable(err) {
+		return nil, s.classify(err)
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT ids.profile_id, `+name+` AS profile_name, `+account+`,
+		       COALESCE(SUM(m.total_minutes), 0) AS all_minutes,
+		       COALESCE(SUM(m.session_count), 0), MAX(m.last_seen),
+		       `+periodColumns+`
+		FROM (`+ids+`) ids `+join+`
+		LEFT JOIN metrics m ON m.profile_id = ids.profile_id
+		GROUP BY ids.profile_id
+		ORDER BY month_minutes DESC, all_minutes DESC, profile_name, ids.profile_id`, periodArgs(p)...)
+	if err != nil {
+		return nil, s.classify(err)
+	}
+	defer rows.Close()
+	var out []ProfileSummary
+	for rows.Next() {
+		var r ProfileSummary
+		if err := rows.Scan(&r.ID, &r.Name, &r.Account, &r.TotalMinutes, &r.SessionCount, &r.LastSeen,
+			&r.WeekMinutes, &r.WeekSessions, &r.MonthMinutes, &r.MonthSessions); err != nil {
+			return nil, err
+		}
+		r.Groups = []string{}
+		out = append(out, r)
+	}
+	return out, s.classify(rows.Err())
+}
+
 // Service is one row of the services table.
 type Service struct {
 	ID   int64  `json:"id"`
@@ -162,17 +335,14 @@ type ServiceSummary struct {
 	MonthSessions int64   `json:"month_sessions"`
 }
 
-// ServiceSummaries returns every service with its usage, household-wide
-// (from metrics) or for one device (from device_metrics). Services without
-// usage are included with zeros. They are ordered by minutes this month,
-// then all-time minutes, then name.
-func (s *Store) ServiceSummaries(ctx context.Context, p Period, device *DeviceKey) ([]ServiceSummary, error) {
-	join := "LEFT JOIN metrics m ON m.service_id = sv.id"
-	args := periodArgs(p)
-	if device != nil {
-		join = "LEFT JOIN device_metrics m ON m.service_id = sv.id AND m.account = ? AND m.device_name = ?"
-		args = append(args, device.Account, device.Name) // ON follows the SELECT list
-	}
+// ServiceSummaries returns every service with its usage in the scope: every
+// profile (from metrics), one group (group_metrics) or one device
+// (device_metrics). Services without usage are included with zeros. They
+// are ordered by minutes this month, then all-time minutes, then name.
+func (s *Store) ServiceSummaries(ctx context.Context, p Period, sc Scope) ([]ServiceSummary, error) {
+	table, filter, extra := sc.metricsSource()
+	join := "LEFT JOIN " + table + " m ON m.service_id = sv.id " + filter
+	args := append(periodArgs(p), extra...) // ON follows the SELECT list
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT sv.id, sv.service_code, sv.service_name,
 		       COALESCE(SUM(m.total_minutes), 0) AS all_minutes,
@@ -274,8 +444,7 @@ func (s *Store) DeviceSummaries(ctx context.Context, p Period, serviceID *int64)
 	return out, s.classify(rows.Err())
 }
 
-// DayMetric is one local calendar day of a service's usage, summed across
-// accounts and profiles (or for one device).
+// DayMetric is one local calendar day of a service's usage in a scope.
 type DayMetric struct {
 	Date         string  `json:"date"`
 	TotalMinutes float64 `json:"total_minutes"`
@@ -284,19 +453,15 @@ type DayMetric struct {
 }
 
 // DailyMetrics returns one entry per day from start to end inclusive, with
-// zeros for days without usage, household-wide or for one device.
-func (s *Store) DailyMetrics(ctx context.Context, serviceID int64, start, end time.Time, device *DeviceKey) ([]DayMetric, error) {
-	table, filter := "metrics", ""
-	args := []any{serviceID, start.Format(dateLayout), end.Format(dateLayout)}
-	if device != nil {
-		table, filter = "device_metrics", "AND account = ? AND device_name = ?"
-		args = append(args, device.Account, device.Name)
-	}
+// zeros for days without usage, in the scope.
+func (s *Store) DailyMetrics(ctx context.Context, serviceID int64, start, end time.Time, sc Scope) ([]DayMetric, error) {
+	table, filter, extra := sc.metricsSource()
+	args := append([]any{serviceID, start.Format(dateLayout), end.Format(dateLayout)}, extra...)
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT date, SUM(total_minutes), SUM(session_count), MAX(last_seen)
-		FROM `+table+`
-		WHERE service_id = ? AND date BETWEEN ? AND ? `+filter+`
-		GROUP BY date`, args...)
+		SELECT m.date, SUM(m.total_minutes), SUM(m.session_count), MAX(m.last_seen)
+		FROM `+table+` m
+		WHERE m.service_id = ? AND m.date BETWEEN ? AND ? `+filter+`
+		GROUP BY m.date`, args...)
 	if err != nil {
 		return nil, s.classify(err)
 	}
@@ -325,14 +490,15 @@ func (s *Store) DailyMetrics(ctx context.Context, serviceID int64, start, end ti
 }
 
 // MedianDaysBetweenUse returns the median gap, in days, between consecutive
-// local days on which the service was used, and false when it was used on
-// fewer than two days.
-func (s *Store) MedianDaysBetweenUse(ctx context.Context, serviceID int64) (float64, bool, error) {
+// local days on which the service was used in the scope, and false when it
+// was used on fewer than two days.
+func (s *Store) MedianDaysBetweenUse(ctx context.Context, serviceID int64, sc Scope) (float64, bool, error) {
+	table, filter, extra := sc.metricsSource()
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT date FROM metrics WHERE service_id = ?
-		GROUP BY date
-		HAVING SUM(total_minutes) > 0 OR SUM(session_count) > 0
-		ORDER BY date`, serviceID)
+		SELECT m.date FROM `+table+` m WHERE m.service_id = ? `+filter+`
+		GROUP BY m.date
+		HAVING SUM(m.total_minutes) > 0 OR SUM(m.session_count) > 0
+		ORDER BY m.date`, append([]any{serviceID}, extra...)...)
 	if err != nil {
 		return 0, false, s.classify(err)
 	}
@@ -367,35 +533,49 @@ func (s *Store) MedianDaysBetweenUse(ctx context.Context, serviceID int64) (floa
 	return (gaps[mid-1] + gaps[mid]) / 2, true, nil
 }
 
-// Session is one household viewing session.
+// Session is one viewing session: account-wide (Account set) or within a
+// profile group (Group set).
 type Session struct {
-	ID          int64    `json:"id"`
-	ServiceID   int64    `json:"service_id"`
-	ServiceCode string   `json:"service_code"`
-	ServiceName string   `json:"service_name"`
-	Account     string   `json:"account"`
-	ProfileIDs  []string `json:"profile_ids"`
-	DeviceNames []string `json:"device_names"`
-	StartTime   string   `json:"start_time"`
-	EndTime     string   `json:"end_time"`
-	Minutes     float64  `json:"session_length_minutes"`
+	ID           int64    `json:"id"`
+	ServiceID    int64    `json:"service_id"`
+	ServiceCode  string   `json:"service_code"`
+	ServiceName  string   `json:"service_name"`
+	Account      string   `json:"account,omitempty"`
+	Group        string   `json:"group,omitempty"`
+	ProfileIDs   []string `json:"profile_ids"`
+	ProfileNames []string `json:"profile_names"` // NextDNS names, else IDs, in ProfileIDs order
+	DeviceNames  []string `json:"device_names"`
+	StartTime    string   `json:"start_time"`
+	EndTime      string   `json:"end_time"`
+	Minutes      float64  `json:"session_length_minutes"`
 }
 
 // RecentSessions returns the latest sessions, newest first, for one service
-// or for all of them when serviceID is nil.
-func (s *Store) RecentSessions(ctx context.Context, serviceID *int64, limit int) ([]Session, error) {
-	where := ""
+// or for all of them when serviceID is nil: account-wide sessions, or one
+// group's when group is set.
+func (s *Store) RecentSessions(ctx context.Context, serviceID *int64, limit int, group string) ([]Session, error) {
+	from, owner := "sessions", "se.account, ''"
+	where := "WHERE 1 = 1"
 	args := []any{}
+	if group != "" {
+		from, owner = "group_sessions", "'', se.group_name"
+		where += " AND se.group_name = ?"
+		args = append(args, group)
+	}
 	if serviceID != nil {
-		where = "WHERE se.service_id = ?"
+		where += " AND se.service_id = ?"
 		args = append(args, *serviceID)
 	}
 	args = append(args, limit)
+	names, err := s.ProfileNames(ctx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT se.id, se.service_id, sv.service_code, sv.service_name, se.account,
+		SELECT se.id, se.service_id, sv.service_code, sv.service_name, `+owner+`,
 		       se.profile_ids, se.device_names, se.start_time, se.end_time,
 		       se.session_length_minutes
-		FROM sessions se JOIN services sv ON sv.id = se.service_id
+		FROM `+from+` se JOIN services sv ON sv.id = se.service_id
 		`+where+`
 		ORDER BY se.start_time DESC, se.id DESC
 		LIMIT ?`, args...)
@@ -407,12 +587,19 @@ func (s *Store) RecentSessions(ctx context.Context, serviceID *int64, limit int)
 	for rows.Next() {
 		var r Session
 		var profiles, devices string
-		if err := rows.Scan(&r.ID, &r.ServiceID, &r.ServiceCode, &r.ServiceName, &r.Account,
+		if err := rows.Scan(&r.ID, &r.ServiceID, &r.ServiceCode, &r.ServiceName, &r.Account, &r.Group,
 			&profiles, &devices, &r.StartTime, &r.EndTime, &r.Minutes); err != nil {
 			return nil, err
 		}
 		if r.ProfileIDs, err = jsonList(profiles); err != nil {
 			return nil, fmt.Errorf("session %d profile_ids: %w", r.ID, err)
+		}
+		r.ProfileNames = make([]string, len(r.ProfileIDs))
+		for i, id := range r.ProfileIDs {
+			r.ProfileNames[i] = id
+			if name, ok := names[id]; ok {
+				r.ProfileNames[i] = name
+			}
 		}
 		if r.DeviceNames, err = jsonList(devices); err != nil {
 			return nil, fmt.Errorf("session %d device_names: %w", r.ID, err)
