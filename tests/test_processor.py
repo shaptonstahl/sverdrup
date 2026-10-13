@@ -326,7 +326,7 @@ def test_device_slice_with_consistent_labels(conn):
         ],
     )
 
-    assert process(conn) == (3, 2, 4, 3)
+    assert process(conn) == (3, 2, 4, 3, 0, 0)
 
     device_sessions = conn.execute(
         "SELECT device_name, profile_ids, start_time, end_time,"

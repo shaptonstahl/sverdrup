@@ -2,8 +2,12 @@
 """
 Collector: Fetches DNS logs from NextDNS API and stores in SQLite.
 
-Logs come from one or more NextDNS accounts (one API key each), and from
-only the profiles listed for each account. A profile with no stored rows is
+Logs come from one or more NextDNS accounts (one API key each). Each run
+lists the profiles every account's key can see (``GET /profiles``) and
+collects all of them, or only the ones listed for that account when it has a
+list; a profile two accounts can see is collected once, by the first. Each
+collected profile's NextDNS name is stored in the profiles table. A profile
+with no stored rows is
 backfilled with every log NextDNS still retains; after that it is polled
 incrementally from its last stored timestamp. Pages are requested in ascending
 time order and committed one at a time, so an interrupted backfill resumes
@@ -13,7 +17,8 @@ carries a unique dedup key that includes its profile.
 Environment variables:
   SVERDRUP_ACCOUNTS: comma-separated short account names, e.g. home,family
   NEXTDNS_<NAME>_API_KEY: API key of account NAME (name uppercased)
-  NEXTDNS_<NAME>_PROFILES: comma-separated profile IDs to collect for NAME
+  NEXTDNS_<NAME>_PROFILES: optional comma-separated profile IDs; when set,
+    only these are collected for NAME instead of every profile it can see
   NEXTDNS_API_URL: NextDNS API endpoint (default: https://api.nextdns.io)
   DB_PATH: SQLite database path (default: /data/sverdrup.db)
 """
@@ -81,7 +86,10 @@ class NextDNSError(Exception):
 
 @dataclass(frozen=True)
 class Account:
-    """A NextDNS account: its API key and the profiles to collect from it."""
+    """A NextDNS account: its API key and the profiles to collect from it.
+
+    Empty ``profiles`` means every profile the key can see.
+    """
 
     name: str
     api_key: str = field(repr=False)
@@ -106,8 +114,8 @@ class Config:
         if environ.get("NEXTDNS_API_KEY") or environ.get("NEXTDNS_PROFILE_ID"):
             problems.append(
                 "NEXTDNS_API_KEY and NEXTDNS_PROFILE_ID are no longer read; set"
-                " SVERDRUP_ACCOUNTS plus NEXTDNS_<NAME>_API_KEY and"
-                " NEXTDNS_<NAME>_PROFILES for each account instead"
+                " SVERDRUP_ACCOUNTS plus NEXTDNS_<NAME>_API_KEY for each account"
+                " instead"
             )
         names = _split_list(environ.get("SVERDRUP_ACCOUNTS", ""))
         if not names:
@@ -145,11 +153,6 @@ class Config:
                     f"{key_var} is not set; give the API key of account {name!r}"
                 )
             profiles = _split_list(environ.get(profiles_var, ""))
-            if not profiles:
-                problems.append(
-                    f"{profiles_var} is not set; list the profile IDs to collect"
-                    f" for account {name!r}, e.g. {profiles_var}=abc123,def456"
-                )
             for profile in profiles:
                 if not profile:
                     problems.append(
@@ -182,8 +185,17 @@ def _split_list(value: str) -> list[str]:
     return [] if not value.strip() else [item.strip() for item in value.split(",")]
 
 
+@dataclass(frozen=True)
+class Profile:
+    """A NextDNS profile an account's key can see."""
+
+    id: str
+    name: str | None
+
+
 class NextDNSClient:
-    """Minimal client for ``GET /profiles/:profile/logs`` with one account's key."""
+    """Minimal client for ``GET /profiles`` and ``GET /profiles/:profile/logs``
+    with one account's key."""
 
     def __init__(
         self,
@@ -205,6 +217,29 @@ class NextDNSClient:
         self._backoff_max = backoff_max
         self._timeout = timeout
         self._sleep = sleep
+
+    def list_profiles(self) -> list[Profile]:
+        """Return every profile this key can see, skipping malformed entries."""
+        url = f"{self._api_url}/profiles"
+        params: dict[str, str] = {}
+        profiles: list[Profile] = []
+        while True:
+            body = self._get(url, params)
+            data = body.get("data")
+            if not isinstance(data, list):
+                raise NextDNSError("NextDNS profiles response has no data list")
+            for item in data:
+                pid = item.get("id") if isinstance(item, dict) else None
+                if isinstance(pid, str) and _PROFILE_RE.match(pid):
+                    profiles.append(Profile(pid, _text(item.get("name"))))
+                else:
+                    log.warning("skipped a malformed profile in the NextDNS response")
+            meta = body.get("meta")
+            pagination = meta.get("pagination") if isinstance(meta, dict) else None
+            cursor = pagination.get("cursor") if isinstance(pagination, dict) else None
+            if not data or not cursor or str(cursor) == params.get("cursor"):
+                return profiles
+            params["cursor"] = str(cursor)
 
     def iter_pages(self, profile_id: str, since: str | None) -> Iterator[list[object]]:
         """Yield a profile's log entries a page at a time, oldest first.
@@ -234,8 +269,9 @@ class NextDNSClient:
             params["cursor"] = str(cursor)
 
     def _get(self, url: str, params: dict[str, str]) -> dict:
+        query = f"?{urllib.parse.urlencode(params)}" if params else ""
         request = urllib.request.Request(
-            f"{url}?{urllib.parse.urlencode(params)}",
+            url + query,
             headers={
                 "X-Api-Key": self._api_key,
                 "Accept": "application/json",
@@ -420,6 +456,68 @@ def collect_profile(
     return result
 
 
+def plan_profiles(
+    account: Account,
+    visible: list[Profile] | None,
+    claimed: set[str],
+) -> list[str]:
+    """Choose the profiles to collect for one account.
+
+    ``visible`` is what the account's key can see, or None when listing
+    failed. A listed account collects exactly its list. Otherwise every
+    visible profile not in ``claimed`` (listed by any account, or chosen by an
+    earlier one) is collected.
+    """
+    if account.profiles:
+        if visible is not None:
+            seen = {p.id for p in visible}
+            for pid in account.profiles:
+                if pid not in seen:
+                    log.warning(
+                        "%s/%s: listed in NEXTDNS_%s_PROFILES but not visible to"
+                        " the account's key",
+                        account.name,
+                        pid,
+                        account.name.upper(),
+                    )
+        return list(account.profiles)
+    chosen = []
+    for profile in visible or []:
+        if profile.id in claimed:
+            log.info(
+                "%s/%s: also visible to another account, which collects it",
+                account.name,
+                profile.id,
+            )
+        elif profile.id not in chosen:
+            chosen.append(profile.id)
+    return chosen
+
+
+def record_profiles(
+    conn: sqlite3.Connection,
+    account: str,
+    profile_ids: list[str],
+    names: Mapping[str, str | None],
+    now: datetime,
+) -> None:
+    """Store each collected profile with its account and NextDNS name.
+
+    A profile whose name is unknown this run keeps its stored name.
+    """
+    stamp = format_timestamp(now)
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.executemany(
+            "INSERT INTO profiles (profile_id, account, name, updated_at)"
+            " VALUES (?, ?, ?, ?) ON CONFLICT (profile_id) DO UPDATE SET"
+            " account = excluded.account,"
+            " name = COALESCE(excluded.name, profiles.name),"
+            " updated_at = excluded.updated_at",
+            [(pid, account, names.get(pid), stamp) for pid in profile_ids],
+        )
+
+
 class _RedactFilter(logging.Filter):
     """Replace secrets wherever they would appear in a log line."""
 
@@ -466,9 +564,53 @@ def main(environ: Mapping[str, str] | None = None) -> int:
         conn = connect(config.db_path)
         try:
             init_db(conn)
+            claimed = {pid for account in config.accounts for pid in account.profiles}
             for account in config.accounts:
                 client = NextDNSClient(config.api_url, account.api_key)
-                for profile_id in account.profiles:
+                try:
+                    visible: list[Profile] | None = client.list_profiles()
+                except NextDNSError as err:
+                    visible = None
+                    if not account.profiles:
+                        log.error(
+                            "%s: could not list profiles, will retry next run: %s",
+                            account.name,
+                            err,
+                        )
+                        failed = True
+                        continue
+                    log.warning(
+                        "%s: could not list profiles; collecting the listed ones"
+                        " without refreshing names: %s",
+                        account.name,
+                        err,
+                    )
+                profiles = plan_profiles(account, visible, claimed)
+                claimed.update(profiles)
+                log.info(
+                    "%s: collecting %d profiles%s",
+                    account.name,
+                    len(profiles),
+                    "" if account.profiles else " (all the key can see)",
+                )
+                names = {p.id: p.name for p in visible or []}
+                try:
+                    record_profiles(
+                        conn,
+                        account.name,
+                        profiles,
+                        names,
+                        datetime.now(timezone.utc),
+                    )
+                except sqlite3.OperationalError as err:
+                    if _is_fatal(err):
+                        raise
+                    log.warning(
+                        "%s: profile names not stored, will retry next run: %s",
+                        account.name,
+                        err,
+                    )
+                for profile_id in profiles:
                     try:
                         result = collect_profile(conn, client, account.name, profile_id)
                     except (NextDNSError, sqlite3.OperationalError) as err:
