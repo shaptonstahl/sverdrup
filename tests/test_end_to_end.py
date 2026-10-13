@@ -19,8 +19,8 @@ def watching(start, minutes, every, domain, device):
 
 
 def test_logs_flow_through_to_metrics(nextdns, db_path):
-    # Two accounts; the family account also owns kids99, which is not listed.
-    nextdns.accounts = {API_KEY: {PROFILE_ID}, FAMILY_KEY: {"fam001", "kids99"}}
+    # Two accounts, each collecting every profile its key can see.
+    nextdns.accounts = {API_KEY: {PROFILE_ID}, FAMILY_KEY: {"fam001"}}
     nextdns.logs = {
         PROFILE_ID: (
             # Netflix in the living room, 19:30-20:30 New York time (EST, UTC-5)
@@ -36,15 +36,12 @@ def test_logs_flow_through_to_metrics(nextdns, db_path):
         # Netflix on the family profile, 20:00-20:20 local, seen only at the
         # router: NextDNS logs no device at all
         "fam001": watching(utc(2026, 3, 2, 1, 0), 20, 10, "netflix.com", None),
-        "kids99": watching(utc(2026, 3, 2, 1, 0), 60, 5, "netflix.com", "Tablet"),
     }
     env = {
         "NEXTDNS_API_URL": nextdns.url,
         "SVERDRUP_ACCOUNTS": "home,family",
         "NEXTDNS_HOME_API_KEY": API_KEY,
-        "NEXTDNS_HOME_PROFILES": PROFILE_ID,
         "NEXTDNS_FAMILY_API_KEY": FAMILY_KEY,
-        "NEXTDNS_FAMILY_PROFILES": "fam001",
         "DB_PATH": db_path,
         "TZ": "America/New_York",
         "SESSION_GAP_MINUTES": "15",

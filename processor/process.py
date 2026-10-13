@@ -463,7 +463,9 @@ def rebuild(
     Household sessions (account + service) are the totals; the device slice
     is derived separately and is never summed into them. Each group is
     resolved against the known profiles and sessionized from only its
-    members' queries.
+    members' queries. An exclusion group that might take in a profile it
+    excludes is not rebuilt: it keeps its rows from the last run that resolved
+    it.
     """
     conn.execute("BEGIN IMMEDIATE")
     try:
@@ -478,16 +480,36 @@ def rebuild(
 
         profiles = known_profiles(conn)
         members: dict[str, list[str]] = {}
+        held: list[str] = []
         group_sessions: list[Session] = []
         group_last_seen: dict[MetricKey, datetime] = {}
         for group in groups:
-            members[group.name], unmatched = group.resolve(profiles)
-            if unmatched:
+            resolution = group.resolve(profiles)
+            if group.exclude and (resolution.unmatched or resolution.unnamed):
+                log.error(
+                    "group %s: not rebuilt, keeping its last rows: %s",
+                    group.name,
+                    "; ".join(
+                        [
+                            f"no known profile has the ID or name {entry!r}"
+                            for entry in resolution.unmatched
+                        ]
+                        + [
+                            f"profile {pid} has no recorded name, so it may be one"
+                            " the group excludes by name; exclude by profile ID"
+                            for pid in resolution.unnamed
+                        ]
+                    ),
+                )
+                held.append(group.name)
+                continue
+            if resolution.unmatched:
                 log.warning(
                     "group %s: no known profile has the ID or name %s",
                     group.name,
-                    ", ".join(repr(entry) for entry in unmatched),
+                    ", ".join(repr(entry) for entry in resolution.unmatched),
                 )
+            members[group.name] = resolution.members
             group_sessions += sessionize(
                 _matched_group(
                     conn, group.name, members[group.name], tz, group_last_seen
@@ -501,12 +523,15 @@ def rebuild(
             "metrics",
             "device_sessions",
             "device_metrics",
-            "group_sessions",
-            "group_metrics",
-            "group_members",
             "profile_groups",
         ):
             conn.execute(f"DELETE FROM {table}")
+        for table in ("group_sessions", "group_metrics", "group_members"):
+            conn.execute(
+                f"DELETE FROM {table}"
+                f" WHERE group_name NOT IN ({','.join('?' * len(held))})",
+                held,
+            )
         conn.executemany(
             "INSERT INTO sessions (service_id, account, profile_ids, device_names,"
             " start_time, end_time, session_length_minutes)"

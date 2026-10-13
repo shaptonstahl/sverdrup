@@ -21,6 +21,10 @@ PROFILES = {
 }
 HAPLAN_ENV = {
     "SVERDRUP_GROUPS": "HapLan",
+    "SVERDRUP_GROUP_HAPLAN_EXCLUDE": "ce2122,887843,69aa36",
+}
+HAPLAN_BY_NAME_ENV = {
+    "SVERDRUP_GROUPS": "HapLan",
     "SVERDRUP_GROUP_HAPLAN_EXCLUDE": "Julie,Cumberland,calibration",
 }
 
@@ -99,7 +103,7 @@ def test_processor_config_reads_groups_and_rejects_bad_ones():
 
 def test_exclusion_group_is_every_profile_but_the_excluded():
     (haplan,) = parse_groups(HAPLAN_ENV)
-    assert haplan.resolve(PROFILES) == (["4c6947", "cfb9e1"], [])
+    assert haplan.resolve(PROFILES) == (["4c6947", "cfb9e1"], [], [])
 
 
 def test_exclusion_group_takes_in_profiles_that_appear_later():
@@ -111,7 +115,11 @@ def test_exclusion_group_takes_in_profiles_that_appear_later():
 def test_entries_match_ids_or_names_ignoring_case_and_report_unmatched():
     group = Group("Mixed", False, ("4C6947", "kids", "ce2122", "Nobody"))
     # IDs match exactly; names match without regard to case.
-    assert group.resolve(PROFILES) == (["ce2122", "cfb9e1"], ["4C6947", "Nobody"])
+    assert group.resolve(PROFILES) == (
+        ["ce2122", "cfb9e1"],
+        ["4C6947", "Nobody"],
+        [],
+    )
 
 
 def test_profile_without_a_name_matches_by_id_only():
@@ -119,7 +127,16 @@ def test_profile_without_a_name_matches_by_id_only():
     assert group.resolve({"69aa36": None, "4c6947": "Stephen"}) == (
         ["4c6947", "69aa36"],
         ["calibration"],
+        ["69aa36"],
     )
+
+
+def test_unnamed_profiles_only_matter_to_exclusions_by_name():
+    profiles = {**PROFILES, "a1b2c3": None}
+    (by_id,) = parse_groups(HAPLAN_ENV)
+    (by_name,) = parse_groups(HAPLAN_BY_NAME_ENV)
+    assert by_id.resolve(profiles).unnamed == []
+    assert by_name.resolve(profiles).unnamed == ["a1b2c3"]
 
 
 # --- per-group aggregation ---------------------------------------------------
@@ -257,7 +274,7 @@ def test_group_definitions_and_members_are_stored(conn):
     assert conn.execute(
         "SELECT name, position, rule, entries FROM profile_groups ORDER BY position"
     ).fetchall() == [
-        ("HapLan", 0, "exclude", '["Julie", "Cumberland", "calibration"]'),
+        ("HapLan", 0, "exclude", '["ce2122", "887843", "69aa36"]'),
         ("Others", 1, "include", '["Julie", "Cumberland"]'),
     ]
     assert conn.execute(
@@ -271,7 +288,9 @@ def test_group_definitions_and_members_are_stored(conn):
 
 
 def test_profiles_known_only_from_queries_join_exclusion_groups(conn):
-    # A database collected before profile discovery has no profiles rows.
+    # A profile with queries but no profiles row has no recorded name; an
+    # exclusion by ID still takes it in.
+    add_profiles(conn, {pid: PROFILES[pid] for pid in ("ce2122", "887843", "69aa36")})
     insert_queries(conn, watch(utc(2026, 3, 1, 20, 0), 10, "4c6947"))
 
     process(conn, HAPLAN_ENV)
@@ -289,7 +308,10 @@ def test_removing_a_group_clears_its_rows_and_unmatched_entries_warn(conn, caplo
     with caplog.at_level(logging.WARNING, logger="sverdrup.processor"):
         process(
             conn,
-            {"SVERDRUP_GROUPS": "Typo", "SVERDRUP_GROUP_TYPO_EXCLUDE": "Juile"},
+            {
+                "SVERDRUP_GROUPS": "Typo",
+                "SVERDRUP_GROUP_TYPO_PROFILES": "Stephen,Juile",
+            },
         )
 
     assert "'Juile'" in caplog.text
@@ -319,3 +341,81 @@ def test_excluded_hosts_never_make_group_sessions(conn):
 
     assert group_sessions(conn) == []
     assert group_metrics(conn) == []
+
+
+# --- exclusion groups fail closed --------------------------------------------
+
+
+def group_rows(conn, group="HapLan"):
+    members = conn.execute(
+        "SELECT profile_id FROM group_members WHERE group_name = ? ORDER BY 1",
+        (group,),
+    ).fetchall()
+    return group_sessions(conn, group), group_metrics(conn, group), members
+
+
+def two_groups_by_name():
+    return {
+        **HAPLAN_BY_NAME_ENV,
+        "SVERDRUP_GROUPS": "HapLan,Kids",
+        "SVERDRUP_GROUP_KIDS_PROFILES": "cfb9e1",
+    }
+
+
+def test_renamed_excluded_profile_keeps_the_group_from_rebuilding(conn, caplog):
+    add_profiles(conn)
+    start = utc(2026, 3, 1, 20, 0)
+    insert_queries(conn, watch(start, 30, "4c6947") + watch(start, 30, "cfb9e1"))
+    process(conn, two_groups_by_name())
+    before = group_rows(conn)
+
+    # Julie's profile is renamed in NextDNS, then she watches for two hours.
+    with conn:
+        conn.execute(
+            "UPDATE profiles SET name = 'Julie iPad' WHERE profile_id = 'ce2122'"
+        )
+    later = utc(2026, 3, 2, 20, 0)
+    insert_queries(conn, watch(later, 120, "ce2122") + watch(later, 20, "cfb9e1"))
+    with caplog.at_level(logging.ERROR, logger="sverdrup.processor"):
+        result = process(conn, two_groups_by_name())
+
+    assert "group HapLan: not rebuilt" in caplog.text
+    assert "'Julie'" in caplog.text
+    assert group_rows(conn) == before
+    # Other groups and the per-profile metrics still pick up the new viewing.
+    assert [row[0] for row in group_metrics(conn, "Kids")] == [
+        "2026-03-01",
+        "2026-03-02",
+    ]
+    assert result.group_sessions == 2
+    assert conn.execute(
+        "SELECT COUNT(*) FROM metrics WHERE profile_id = 'ce2122'"
+    ).fetchone() == (1,)
+    assert conn.execute(
+        "SELECT name FROM profile_groups ORDER BY position"
+    ).fetchall() == [
+        ("HapLan",),
+        ("Kids",),
+    ]
+
+
+def test_unnamed_profile_keeps_a_by_name_exclusion_from_rebuilding(conn, caplog):
+    add_profiles(conn)
+    start = utc(2026, 3, 1, 20, 0)
+    insert_queries(conn, watch(start, 30, "4c6947"))
+    process(conn, HAPLAN_BY_NAME_ENV)
+    before = group_rows(conn)
+
+    # A new profile's queries arrive before the collector stored its name: it
+    # may be one HapLan excludes.
+    insert_queries(conn, watch(start + timedelta(minutes=20), 60, "a1b2c3"))
+    with caplog.at_level(logging.ERROR, logger="sverdrup.processor"):
+        process(conn, HAPLAN_BY_NAME_ENV)
+
+    assert "profile a1b2c3 has no recorded name" in caplog.text
+    assert group_rows(conn) == before
+
+    # Once the name is recorded, the group is rebuilt.
+    add_profiles(conn, {"a1b2c3": "Guest"})
+    process(conn, HAPLAN_BY_NAME_ENV)
+    assert group_rows(conn)[2] == [("4c6947",), ("a1b2c3",), ("cfb9e1",)]

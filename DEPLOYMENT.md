@@ -23,12 +23,11 @@ SVERDRUP_ACCOUNTS=home,family
 # can see is collected.
 NEXTDNS_HOME_API_KEY=your_home_account_api_key
 NEXTDNS_FAMILY_API_KEY=your_family_account_api_key
-# Optional: collect only these profiles for an account
-NEXTDNS_FAMILY_PROFILES=fed321
 
-# Optional profile groups; the first is the dashboard's default view
+# Optional profile groups; the first is the dashboard's default view.
+# HapLan: all but ce2122 (Julie), 887843 (Cumberland), 69aa36 (calibration)
 SVERDRUP_GROUPS=HapLan
-SVERDRUP_GROUP_HAPLAN_EXCLUDE=Julie,Cumberland,calibration
+SVERDRUP_GROUP_HAPLAN_EXCLUDE=ce2122,887843,69aa36
 
 # Optional (defaults shown)
 NEXTDNS_API_URL=https://api.nextdns.io
@@ -45,21 +44,22 @@ DASHBOARD_PORT=8080
 
 Each collector run asks NextDNS which profiles every account's key can see (`GET /profiles`) and collects them all, storing each profile's NextDNS name. A profile that appears later is backfilled with every log NextDNS still retains, then polled like the rest. When two keys can see the same profile, the first account in `SVERDRUP_ACCOUNTS` collects it.
 
-`NEXTDNS_<NAME>_PROFILES` is optional. When it is set, that account collects only the listed profile IDs, as before discovery existed, so an existing `.env` keeps collecting exactly what it did; delete the line to collect everything the key can see. A listed profile the key cannot see is logged as a warning and fails to collect, and no other account collects a listed profile.
+`NEXTDNS_<NAME>_PROFILES` is no longer read. If an older `.env` still sets it, the collector logs one warning at startup and collects every profile anyway; delete the line when convenient. If listing an account's profiles fails, that account is skipped for the run and retried on the next.
 
 Groups aggregate profiles into named views, configured with `SVERDRUP_GROUPS` (comma-separated names: a letter, then letters, digits or underscores; `all` is reserved) and, for each group `NAME` uppercased, exactly one of:
 
 - `SVERDRUP_GROUP_<NAME>_PROFILES`: the profiles in the group
 - `SVERDRUP_GROUP_<NAME>_EXCLUDE`: the profiles left out of a group of every profile; profiles discovered later join it automatically
 
-Entries are profile IDs or NextDNS profile names (names ignore case; a name shared by two profiles matches both). For example, a household group of every profile except two other households and a test profile:
+Entries are profile IDs or NextDNS profile names (names ignore case; a name shared by two profiles matches both). Prefer IDs: a profile renamed in NextDNS keeps its ID. For example, a household group of every profile except two other households and a test profile:
 
 ```
 SVERDRUP_GROUPS=HapLan
-SVERDRUP_GROUP_HAPLAN_EXCLUDE=Julie,Cumberland,calibration
+# ce2122 (Julie), 887843 (Cumberland), 69aa36 (calibration)
+SVERDRUP_GROUP_HAPLAN_EXCLUDE=ce2122,887843,69aa36
 ```
 
-The processor reads the groups on each run and logs a warning for any entry that matches no known profile, so a misspelled exclusion is visible in `/var/log/sverdrup-process.log`; the processor refuses to run, naming the variable, when a group is malformed. The dashboard and API show the first group by default, offer the others and "All profiles", and pick up a change after the next processor run (restart the container to load a changed `.env`). `GET /api/groups` shows how each group resolved.
+The processor reads the groups on each run. An exclusion group never takes in a profile it might exclude: when one of its entries matches no known profile, or it has an entry that is not a profile ID while some profile has no recorded name yet, the processor logs an error naming the entry or profile to `/var/log/sverdrup-process.log` and leaves that group's sessions, metrics and members as the last run that resolved it left them; other groups and per-profile metrics are rebuilt as usual. An entry of a `_PROFILES` group that matches no profile only logs a warning. The processor refuses to run, naming the variable, when a group is malformed. The dashboard and API show the first group by default, offer the others and "All profiles", and pick up a change after the next processor run (restart the container to load a changed `.env`). `GET /api/groups` shows how each group resolved.
 
 ### Run with Docker Compose (Miracle / Synology layout)
 

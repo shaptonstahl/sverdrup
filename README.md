@@ -27,7 +27,7 @@ Sverdrup is a containerized system with three components:
 2. **Processor** (Python) — Sessionizes DNS queries into viewing sessions and computes metrics per profile, per device, and per profile group
 3. **Dashboard** (Go + htmx) — Lightweight web UI, mobile-friendly, shows time-per-service and usage frequency for a profile group, all profiles, or one device
 
-**Profile groups** aggregate NextDNS profiles into named views, such as a household that excludes other people sharing the account: `SVERDRUP_GROUPS=HapLan` with `SVERDRUP_GROUP_HAPLAN_EXCLUDE=Julie,Cumberland,calibration`. The first group is the dashboard's default. See [DEPLOYMENT.md](DEPLOYMENT.md#profiles-and-groups).
+**Profile groups** aggregate NextDNS profiles into named views, such as a household that excludes other people sharing the account: `SVERDRUP_GROUPS=HapLan` with `SVERDRUP_GROUP_HAPLAN_EXCLUDE=ce2122,887843,69aa36` (the profile IDs of Julie, Cumberland and calibration). The first group is the dashboard's default. See [DEPLOYMENT.md](DEPLOYMENT.md#profiles-and-groups).
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design, including data, infrastructure, and security/trust layers.
 

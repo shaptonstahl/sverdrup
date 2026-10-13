@@ -4,8 +4,9 @@ A group either lists its profiles (``SVERDRUP_GROUP_<NAME>_PROFILES``) or
 takes every known profile except the ones it lists
 (``SVERDRUP_GROUP_<NAME>_EXCLUDE``), so an exclusion group keeps covering
 profiles that appear later. An entry is a profile ID or a NextDNS profile
-name; names match without regard to case. Groups are resolved against the
-profiles the database knows on each processor run.
+name; names match without regard to case, but IDs are stable across renames.
+Groups are resolved against the profiles the database knows on each processor
+run.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import NamedTuple
 
 _GROUP_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 
@@ -28,6 +30,19 @@ class GroupConfigError(Exception):
         self.problems = problems
 
 
+class Resolution(NamedTuple):
+    """A group resolved against the known profiles, each list sorted.
+
+    ``unmatched`` lists entries that match no known profile. For an exclusion
+    group with an entry that is not a known profile ID, ``unnamed`` lists the
+    known profiles with no recorded name, any of which that entry might mean.
+    """
+
+    members: list[str]
+    unmatched: list[str]
+    unnamed: list[str]
+
+
 @dataclass(frozen=True)
 class Group:
     """A named group: only ``entries``, or every profile except them."""
@@ -40,13 +55,9 @@ class Group:
     def rule(self) -> str:
         return "exclude" if self.exclude else "include"
 
-    def resolve(
-        self, profiles: Mapping[str, str | None]
-    ) -> tuple[list[str], list[str]]:
-        """Return (member profile IDs, entries that match no profile), sorted.
-
-        ``profiles`` maps each known profile ID to its NextDNS name, or None.
-        """
+    def resolve(self, profiles: Mapping[str, str | None]) -> Resolution:
+        """Resolve the group; ``profiles`` maps each known profile ID to its
+        NextDNS name, or None."""
         matched: set[str] = set()
         unmatched: list[str] = []
         for entry in self.entries:
@@ -60,7 +71,10 @@ class Group:
                 unmatched.append(entry)
             matched |= hits
         members = set(profiles) - matched if self.exclude else matched
-        return sorted(members), sorted(unmatched)
+        unnamed = []
+        if self.exclude and any(entry not in profiles for entry in self.entries):
+            unnamed = [pid for pid, name in profiles.items() if name is None]
+        return Resolution(sorted(members), sorted(unmatched), sorted(unnamed))
 
 
 def parse_groups(environ: Mapping[str, str]) -> tuple[Group, ...]:

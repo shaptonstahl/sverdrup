@@ -4,8 +4,8 @@ Collector: Fetches DNS logs from NextDNS API and stores in SQLite.
 
 Logs come from one or more NextDNS accounts (one API key each). Each run
 lists the profiles every account's key can see (``GET /profiles``) and
-collects all of them, or only the ones listed for that account when it has a
-list; a profile two accounts can see is collected once, by the first. Each
+collects all of them; a profile two accounts can see is collected once, by the
+first. Each
 collected profile's NextDNS name is stored in the profiles table. A profile
 with no stored rows is
 backfilled with every log NextDNS still retains; after that it is polled
@@ -17,8 +17,6 @@ carries a unique dedup key that includes its profile.
 Environment variables:
   SVERDRUP_ACCOUNTS: comma-separated short account names, e.g. home,family
   NEXTDNS_<NAME>_API_KEY: API key of account NAME (name uppercased)
-  NEXTDNS_<NAME>_PROFILES: optional comma-separated profile IDs; when set,
-    only these are collected for NAME instead of every profile it can see
   NEXTDNS_API_URL: NextDNS API endpoint (default: https://api.nextdns.io)
   DB_PATH: SQLite database path (default: /data/sverdrup.db)
 """
@@ -86,14 +84,10 @@ class NextDNSError(Exception):
 
 @dataclass(frozen=True)
 class Account:
-    """A NextDNS account: its API key and the profiles to collect from it.
-
-    Empty ``profiles`` means every profile the key can see.
-    """
+    """A NextDNS account: its name and API key."""
 
     name: str
     api_key: str = field(repr=False)
-    profiles: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -103,6 +97,8 @@ class Config:
     api_url: str
     accounts: tuple[Account, ...]
     db_path: str
+    # NEXTDNS_<NAME>_PROFILES variables that are set but no longer read.
+    ignored: tuple[str, ...] = ()
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str]) -> Config:
@@ -125,7 +121,7 @@ class Config:
             )
         accounts: list[Account] = []
         seen_names: set[str] = set()
-        profile_owner: dict[str, str] = {}
+        ignored: list[str] = []
         for name in names:
             if not name:
                 problems.append(
@@ -152,24 +148,9 @@ class Config:
                 problems.append(
                     f"{key_var} is not set; give the API key of account {name!r}"
                 )
-            profiles = _split_list(environ.get(profiles_var, ""))
-            for profile in profiles:
-                if not profile:
-                    problems.append(
-                        f"{profiles_var} has an empty profile ID; remove the extra comma"
-                    )
-                elif not _PROFILE_RE.match(profile):
-                    problems.append(
-                        f"{profiles_var}: profile ID {profile!r} is not a valid ID"
-                    )
-                elif profile in profile_owner:
-                    problems.append(
-                        f"{profiles_var}: profile ID {profile!r} is already listed in"
-                        f" {profile_owner[profile]}; list each profile once"
-                    )
-                else:
-                    profile_owner[profile] = profiles_var
-            accounts.append(Account(name, api_key, tuple(profiles)))
+            if environ.get(profiles_var, "").strip():
+                ignored.append(profiles_var)
+            accounts.append(Account(name, api_key))
 
         api_url = environ.get("NEXTDNS_API_URL", "").strip() or DEFAULT_API_URL
         if urllib.parse.urlparse(api_url).scheme not in ("http", "https"):
@@ -177,7 +158,7 @@ class Config:
         if problems:
             raise ConfigError(problems)
         db_path = environ.get("DB_PATH", "").strip() or DEFAULT_DB_PATH
-        return cls(api_url.rstrip("/"), tuple(accounts), db_path)
+        return cls(api_url.rstrip("/"), tuple(accounts), db_path, tuple(ignored))
 
 
 def _split_list(value: str) -> list[str]:
@@ -458,31 +439,14 @@ def collect_profile(
 
 def plan_profiles(
     account: Account,
-    visible: list[Profile] | None,
+    visible: list[Profile],
     claimed: set[str],
 ) -> list[str]:
-    """Choose the profiles to collect for one account.
-
-    ``visible`` is what the account's key can see, or None when listing
-    failed. A listed account collects exactly its list. Otherwise every
-    visible profile not in ``claimed`` (listed by any account, or chosen by an
-    earlier one) is collected.
+    """Choose the profiles to collect for one account: every profile its key
+    can see that is not in ``claimed`` (chosen by an earlier account).
     """
-    if account.profiles:
-        if visible is not None:
-            seen = {p.id for p in visible}
-            for pid in account.profiles:
-                if pid not in seen:
-                    log.warning(
-                        "%s/%s: listed in NEXTDNS_%s_PROFILES but not visible to"
-                        " the account's key",
-                        account.name,
-                        pid,
-                        account.name.upper(),
-                    )
-        return list(account.profiles)
     chosen = []
-    for profile in visible or []:
+    for profile in visible:
         if profile.id in claimed:
             log.info(
                 "%s/%s: also visible to another account, which collects it",
@@ -555,6 +519,13 @@ def main(environ: Mapping[str, str] | None = None) -> int:
     redact = _RedactFilter([account.api_key for account in config.accounts])
     for handler in logging.getLogger().handlers:
         handler.addFilter(redact)
+    if config.ignored:
+        log.warning(
+            "%s %s no longer read; every profile each account's key can see is"
+            " collected",
+            ", ".join(config.ignored),
+            "is" if len(config.ignored) == 1 else "are",
+        )
 
     with run_lock(f"{config.db_path}.collect.lock") as acquired:
         if not acquired:
@@ -564,36 +535,23 @@ def main(environ: Mapping[str, str] | None = None) -> int:
         conn = connect(config.db_path)
         try:
             init_db(conn)
-            claimed = {pid for account in config.accounts for pid in account.profiles}
+            claimed: set[str] = set()
             for account in config.accounts:
                 client = NextDNSClient(config.api_url, account.api_key)
                 try:
-                    visible: list[Profile] | None = client.list_profiles()
+                    visible = client.list_profiles()
                 except NextDNSError as err:
-                    visible = None
-                    if not account.profiles:
-                        log.error(
-                            "%s: could not list profiles, will retry next run: %s",
-                            account.name,
-                            err,
-                        )
-                        failed = True
-                        continue
-                    log.warning(
-                        "%s: could not list profiles; collecting the listed ones"
-                        " without refreshing names: %s",
+                    log.error(
+                        "%s: could not list profiles, will retry next run: %s",
                         account.name,
                         err,
                     )
+                    failed = True
+                    continue
                 profiles = plan_profiles(account, visible, claimed)
                 claimed.update(profiles)
-                log.info(
-                    "%s: collecting %d profiles%s",
-                    account.name,
-                    len(profiles),
-                    "" if account.profiles else " (all the key can see)",
-                )
-                names = {p.id: p.name for p in visible or []}
+                log.info("%s: collecting %d profiles", account.name, len(profiles))
+                names = {p.id: p.name for p in visible}
                 try:
                     record_profiles(
                         conn,

@@ -265,11 +265,11 @@ graph TB
 **Inputs:**
 - NextDNS API endpoint (env var: `NEXTDNS_API_URL`)
 - NextDNS accounts (env var: `SVERDRUP_ACCOUNTS`, comma-separated short names such as `home,family`)
-- For each account `NAME` (uppercased in the variable name): its API key (`NEXTDNS_<NAME>_API_KEY`) and, optionally, the only profile IDs to collect (`NEXTDNS_<NAME>_PROFILES`, comma-separated)
+- For each account `NAME` (uppercased in the variable name): its API key (`NEXTDNS_<NAME>_API_KEY`)
 
-**Profile discovery:** each run first lists the profiles every account's key can see (`GET /profiles`, following its pagination cursor). An account without a profile list collects all of them; an account with one collects exactly its list, as before discovery existed, so an existing configuration keeps its behavior, and a listed profile the key cannot see is logged as a warning. A profile visible to two keys is collected once: by the account that lists it, else by the first account in `SVERDRUP_ACCOUNTS` that sees it. If listing fails, an account without a list is skipped for that run (exit code 2); an account with a list collects its list without refreshing names. Each collected profile is upserted into the `profiles` table with its account and NextDNS name (a name the run did not learn keeps the stored one).
+**Profile discovery:** each run first lists the profiles every account's key can see (`GET /profiles`, following its pagination cursor). Every account collects all of them. A profile visible to two keys is collected once, by the first account in `SVERDRUP_ACCOUNTS` that sees it. If listing fails, the account is skipped for that run (exit code 2). Each collected profile is upserted into the `profiles` table with its account and NextDNS name (a name the run did not learn keeps the stored one).
 
-Startup validation is strict and reports every problem at once, naming the variable: a missing key, an empty or duplicate profile ID (also across accounts), a bad account name, and the retired single-account variables `NEXTDNS_API_KEY`/`NEXTDNS_PROFILE_ID`. Messages never include a key.
+Startup validation is strict and reports every problem at once, naming the variable: a missing key, a bad account name, and the retired single-account variables `NEXTDNS_API_KEY`/`NEXTDNS_PROFILE_ID`. A leftover `NEXTDNS_<NAME>_PROFILES` is not an error: it is ignored, with one warning at startup. Messages never include a key.
 
 **Outputs:**
 - SQLite `profiles` table: `profile_id, account, name, updated_at`
@@ -303,7 +303,7 @@ Startup validation is strict and reports every problem at once, naming the varia
 - SQLite `device_sessions` and `device_metrics` tables: the device slice, keyed by `service_id, account, device_name`
 - SQLite `profile_groups`, `group_members`, `group_sessions` and `group_metrics` tables: each profile group, its resolved members, and its sessions and daily metrics, keyed by `service_id, group_name`
 
-**Configuration:** `SESSION_GAP_MINUTES` (default 15), `TZ` (IANA zone that defines calendar days; default UTC), and the optional profile groups: `SVERDRUP_GROUPS` (comma-separated names) with, per group `NAME`, either `SVERDRUP_GROUP_<NAME>_PROFILES` (the profiles in it) or `SVERDRUP_GROUP_<NAME>_EXCLUDE` (every profile except these). Entries are profile IDs or NextDNS names (case-insensitive). A malformed group stops the processor with every problem named.
+**Configuration:** `SESSION_GAP_MINUTES` (default 15), `TZ` (IANA zone that defines calendar days; default UTC), and the optional profile groups: `SVERDRUP_GROUPS` (comma-separated names) with, per group `NAME`, either `SVERDRUP_GROUP_<NAME>_PROFILES` (the profiles in it) or `SVERDRUP_GROUP_<NAME>_EXCLUDE` (every profile except these). Entries are profile IDs (preferred: they survive renames) or NextDNS names (case-insensitive). A malformed group stops the processor with every problem named.
 
 **Algorithm:**
 1. Read unprocessed queries from `queries` table
@@ -312,7 +312,7 @@ Startup validation is strict and reports every problem at once, naming the varia
 4. Calculate session length in minutes (last query minus first query)
 5. Aggregate by service, profile and local day: sum total_minutes, count sessions, take the latest matched query as last_seen (or, for a day that has minutes but no matched query, such as a profile segment crossing midnight, the end of the latest minutes credited that day). Within a session, the time between two queries belongs to the profile of the earlier query, and the session counts once, under the profile it started in
 6. Device slice: repeat steps 3-5 per account, service and NextDNS device (sessions split by device, minutes per device and local day). Queries without a device go to an explicit `unidentified` bucket rather than being dropped
-7. Groups: resolve each group against the known profiles (the `profiles` table plus every profile with stored queries); an exclusion group is every known profile minus its entries, so profiles discovered later join it. Log any entry that matches no profile. Then repeat steps 3-5 per group and service over only the members' queries, across accounts and ignoring profile and device, with no per-profile split: concurrent viewing in two member profiles merges into one session, and queries from non-members never join or bridge a group's sessions
+7. Groups: resolve each group against the known profiles (the `profiles` table plus every profile with stored queries); an exclusion group is every known profile minus its entries, so profiles discovered later join it. An exclusion group that might take in a profile it excludes (an entry matches no known profile, or an entry is not a profile ID while some known profile has no recorded name) is not rebuilt: the processor logs an error naming the entry or profile and keeps that group's `group_sessions`, `group_metrics` and `group_members` rows from the last run that resolved it. An unmatched entry of an explicit group is logged as a warning. Then repeat steps 3-5 per group and service over only the members' queries, across accounts and ignoring profile and device, with no per-profile split: concurrent viewing in two member profiles merges into one session, and queries from non-members never join or bridge a group's sessions
 8. Replace the `sessions`, `metrics`, `device_sessions`, `device_metrics`, `profile_groups`, `group_members`, `group_sessions` and `group_metrics` tables with the result in one transaction; exit
 
 Steps 3-8 recompute from every matched query on each run rather than appending, so re-running never double-counts and late-arriving queries join the right session.
@@ -401,9 +401,8 @@ The container expects these at runtime:
 SVERDRUP_ACCOUNTS=home,family                # NextDNS accounts, as short names
 NEXTDNS_HOME_API_KEY=<key>                   # API key of account "home"; collects every profile it sees
 NEXTDNS_FAMILY_API_KEY=<key>                 # one key per account
-NEXTDNS_FAMILY_PROFILES=<id3>                # optional: collect only these for "family"
 SVERDRUP_GROUPS=HapLan                       # optional profile groups; the first is the default view
-SVERDRUP_GROUP_HAPLAN_EXCLUDE=Julie,Cumberland,calibration  # every profile but these (or _PROFILES=...)
+SVERDRUP_GROUP_HAPLAN_EXCLUDE=ce2122,887843,69aa36  # all but Julie, Cumberland, calibration (or _PROFILES=...)
 NEXTDNS_API_URL=https://api.nextdns.io      # NextDNS API endpoint
 COLLECTOR_INTERVAL=15                        # minutes between collection runs
 PROCESSOR_INTERVAL=60                        # minutes between processing runs (see Scheduling below)
@@ -502,7 +501,7 @@ Choices made where the design above was silent, recorded so they can be revisite
 - **Deduplication:** `dedup_key` is a SHA-256 of the profile, normalized timestamp, domain, device ID and name, client IP, protocol and query type. Two genuinely identical queries in the same millisecond collapse into one row, which does not change any session.
 - **Midnight:** a session's minutes are split at local midnight (per `TZ`, DST-aware); the session counts once, on the day it starts. Summing `total_minutes` and `session_count` over all metric rows therefore equals the sessions table's totals.
 - **Metrics grain:** one row per service, profile and local day. Lifetime and cross-profile figures are aggregations, not stored rows.
-- **Profile discovery replaces required lists:** an explicit `NEXTDNS_<NAME>_PROFILES` still restricts collection, so deployments configured before discovery collect the same profiles until the line is removed.
+- **Profile discovery replaces profile lists:** every account collects every profile its key can see. `NEXTDNS_<NAME>_PROFILES` is ignored with a startup warning rather than rejected, so a deployment configured before discovery keeps running without edits.
 - **Groups are configuration, resolved by the processor:** groups live in the environment like the rest of Sverdrup's settings; the processor resolves them into `profile_groups` and `group_members` on each run, so the dashboard reads them from the database and never parses the environment. An exclusion group is defined against the known profiles, not a fixed list, so new profiles join it.
 - **Group sessions cross accounts:** a group is one viewing unit, so its track is service and group, merging its profiles' queries from every account; account-wide sessions keep accounts apart as before. Group figures come from `group_metrics`, never from summing per-profile metrics, which would split a session started under an excluded profile or let an excluded profile's queries bridge two of the group's sessions.
 - **Sessions per account and service:** a session ignores profile and device. Its time between consecutive queries is attributed to the earlier query's profile, and it counts once, under the profile it started in; the sessions table records the profiles and devices it touched as JSON arrays. When two clients in different profiles watch at once, the per-profile split follows whichever profile queried last, while the total stays the session's wall-clock length.

@@ -263,18 +263,17 @@ def test_timestamps_normalize_to_utc_milliseconds(value, expected):
 GOOD_ENV = {
     "SVERDRUP_ACCOUNTS": "home, Family",
     "NEXTDNS_HOME_API_KEY": "key-home",
-    "NEXTDNS_HOME_PROFILES": "abc123,def456",
     "NEXTDNS_FAMILY_API_KEY": "key-family",
-    "NEXTDNS_FAMILY_PROFILES": "fam001",
 }
 
 
-def test_config_reads_nested_accounts_and_profiles():
+def test_config_reads_nested_accounts():
     config = Config.from_env(GOOD_ENV)
-    assert [(a.name, a.api_key, a.profiles) for a in config.accounts] == [
-        ("home", "key-home", ("abc123", "def456")),
-        ("family", "key-family", ("fam001",)),
+    assert [(a.name, a.api_key) for a in config.accounts] == [
+        ("home", "key-home"),
+        ("family", "key-family"),
     ]
+    assert config.ignored == ()
     assert config.api_url == "https://api.nextdns.io"
     assert config.db_path == "/data/sverdrup.db"
     assert "key-home" not in repr(config)
@@ -288,13 +287,6 @@ def test_config_reads_nested_accounts_and_profiles():
         ({"SVERDRUP_ACCOUNTS": "home,my-family"}, "account name 'my-family'"),
         ({"SVERDRUP_ACCOUNTS": "home,HOME"}, "lists account 'home' more than once"),
         ({"NEXTDNS_HOME_API_KEY": " "}, "NEXTDNS_HOME_API_KEY is not set"),
-        ({"NEXTDNS_HOME_PROFILES": "abc123,"}, "NEXTDNS_HOME_PROFILES has an empty"),
-        ({"NEXTDNS_HOME_PROFILES": "abc123,abc123"}, "'abc123' is already listed"),
-        (
-            {"NEXTDNS_FAMILY_PROFILES": "abc123"},
-            "already listed in NEXTDNS_HOME_PROFILES",
-        ),
-        ({"NEXTDNS_HOME_PROFILES": "abc/123"}, "'abc/123' is not a valid ID"),
         (
             {"NEXTDNS_API_KEY": "old"},
             "NEXTDNS_API_KEY and NEXTDNS_PROFILE_ID are no longer",
@@ -316,66 +308,31 @@ def test_config_reports_every_problem_at_once():
     assert len(caught.value.problems) == 3
 
 
-def test_config_without_a_profile_list_collects_every_visible_profile():
-    env = {**GOOD_ENV, "NEXTDNS_FAMILY_PROFILES": " "}
-    del env["NEXTDNS_HOME_PROFILES"]
-    assert [a.profiles for a in Config.from_env(env).accounts] == [(), ()]
+def test_config_ignores_leftover_profile_lists_even_malformed_ones():
+    env = {
+        **GOOD_ENV,
+        "NEXTDNS_HOME_PROFILES": "abc123,,abc/123",
+        "NEXTDNS_FAMILY_PROFILES": " ",
+    }
+    assert Config.from_env(env).ignored == ("NEXTDNS_HOME_PROFILES",)
 
 
 # --- main ----------------------------------------------------------------
 
 
 def two_account_env(nextdns, db_path):
-    """Two accounts; the family account owns a profile we choose not to collect."""
+    """Two accounts, each with its own profiles."""
     nextdns.accounts = {
         API_KEY: {PROFILE_ID, "def456"},
-        "family-key-not-a-real-secret": {"fam001", "kids99"},
+        "family-key-not-a-real-secret": {"fam001"},
     }
     return {
         "NEXTDNS_API_URL": nextdns.url,
         "SVERDRUP_ACCOUNTS": "home,family",
         "NEXTDNS_HOME_API_KEY": API_KEY,
-        "NEXTDNS_HOME_PROFILES": f"{PROFILE_ID},def456",
         "NEXTDNS_FAMILY_API_KEY": "family-key-not-a-real-secret",
-        "NEXTDNS_FAMILY_PROFILES": "fam001",
         "DB_PATH": db_path,
     }
-
-
-def test_main_collects_only_listed_profiles_of_each_account(nextdns, db_path, conn):
-    env = two_account_env(nextdns, db_path)
-    nextdns.logs = {
-        PROFILE_ID: minute_entries(10, 2),
-        "def456": minute_entries(11, 3),
-        "fam001": minute_entries(12, 4),
-        "kids99": minute_entries(13, 5),  # owned by the family account, not listed
-    }
-
-    assert collector.main(env) == 0
-
-    counts = conn.execute(
-        "SELECT account, profile_id, COUNT(*) FROM queries"
-        " GROUP BY account, profile_id ORDER BY profile_id"
-    ).fetchall()
-    assert counts == [
-        ("home", PROFILE_ID, 2),
-        ("home", "def456", 3),
-        ("family", "fam001", 4),
-    ]
-    assert {(r["profile"], r["api_key"]) for r in nextdns.requests} == {
-        (PROFILE_ID, API_KEY),
-        ("def456", API_KEY),
-        ("fam001", "family-key-not-a-real-secret"),
-    }
-
-
-def test_main_keeps_collecting_other_profiles_when_one_fails(nextdns, db_path, conn):
-    env = two_account_env(nextdns, db_path)
-    env["NEXTDNS_HOME_PROFILES"] = "notmine,def456"
-    nextdns.logs = {"def456": minute_entries(11, 3), "fam001": minute_entries(12, 4)}
-
-    assert collector.main(env) == 2
-    assert conn.execute("SELECT COUNT(*) FROM queries").fetchone()[0] == 7
 
 
 def test_main_treats_a_locked_database_as_a_profile_failure(
@@ -525,23 +482,25 @@ def test_main_without_lists_collects_every_visible_profile_once(nextdns, db_path
     }
 
 
-def test_a_listed_profile_is_never_collected_by_a_discovering_account(
-    nextdns, db_path, conn
+def test_a_leftover_profile_list_is_ignored_with_one_warning(
+    nextdns, db_path, conn, caplog
 ):
     env = discovery_env(nextdns, db_path)
-    env["SVERDRUP_ACCOUNTS"] = "family,home"
     env["NEXTDNS_HOME_PROFILES"] = PROFILE_ID
 
-    assert collector.main(env) == 0
+    with caplog.at_level(logging.WARNING):
+        assert collector.main(env) == 0
 
-    # home lists abc123, so family (first, discovering) leaves it, and home
-    # collects only its list, not def456.
     assert query_counts(conn) == [
         ("home", PROFILE_ID, 2),
+        ("home", "def456", 3),
         ("family", "fam001", 4),
         ("family", "kids99", 5),
     ]
-    assert (PROFILE_ID, "home", "Stephen") in stored_profiles(conn)
+    warnings = [r for r in caplog.records if "NEXTDNS_HOME_PROFILES" in r.message]
+    assert len(warnings) == 1
+    assert warnings[0].levelno == logging.WARNING
+    assert "no longer read" in warnings[0].message
 
 
 def test_a_new_profile_is_backfilled_while_others_poll_incrementally(
@@ -575,9 +534,7 @@ def test_profile_names_follow_renames(nextdns, db_path, conn):
     assert ("def456", "home", "Julie's house") in stored_profiles(conn)
 
 
-def test_listing_failure_skips_a_discovering_account_but_not_a_listed_one(
-    nextdns, db_path, conn, caplog
-):
+def test_listing_failure_skips_the_account_for_the_run(nextdns, db_path, conn, caplog):
     env = discovery_env(nextdns, db_path)
     env["NEXTDNS_HOME_PROFILES"] = "def456"
     nextdns.profiles_failure = 404
@@ -585,22 +542,7 @@ def test_listing_failure_skips_a_discovering_account_but_not_a_listed_one(
     with caplog.at_level(logging.WARNING):
         assert collector.main(env) == 2
 
-    # home still collects its list, without names; family has nothing to go on.
-    assert query_counts(conn) == [("home", "def456", 3)]
-    assert stored_profiles(conn) == [("def456", "home", None)]
+    assert query_counts(conn) == []
+    assert stored_profiles(conn) == []
+    assert "home: could not list profiles" in caplog.text
     assert "family: could not list profiles" in caplog.text
-
-
-def test_a_listed_profile_the_key_cannot_see_is_warned_about(
-    nextdns, db_path, conn, caplog
-):
-    env = discovery_env(nextdns, db_path)
-    env["NEXTDNS_HOME_PROFILES"] = "def456,gone99"
-
-    with caplog.at_level(logging.WARNING):
-        assert collector.main(env) == 2
-
-    assert "home/gone99: listed in NEXTDNS_HOME_PROFILES but not visible" in (
-        caplog.text
-    )
-    assert ("home", "def456", 3) in query_counts(conn)
