@@ -16,7 +16,7 @@ from processor.process import (
     sessionize,
     split_by_day,
 )
-from sverdrup.db import format_timestamp, get_meta
+from sverdrup.db import format_timestamp, get_meta, parse_timestamp
 from tests.nextdns_mock import utc
 
 GAP = timedelta(minutes=15)
@@ -490,6 +490,152 @@ def test_classify_only_touches_new_queries_until_mappings_change(conn):
     matched = conn.execute("SELECT service_id FROM queries").fetchone()[0]
     assert matched == service_id(conn, "netflix")
     assert get_meta(conn, "classifier_fingerprint") is not None
+
+
+# --- calibration regression: YouTube on 2026-10-08 --------------------------
+
+# Every query from the NextDNS calibration profile on 2026-10-08 that the
+# pre-exclusion map counted as YouTube, plus every accounts.google.com query.
+# Ground truth: one browser YouTube session, 16:40:00-17:40:19 EDT (60.3 min).
+# accounts.youtube.com keeps firing every ~10 minutes from an open Google tab
+# for hours afterwards, which chained the evening into one 227.6-minute session.
+CALIBRATION_2026_10_08 = [
+    ("2026-10-08T20:39:34.644Z", "i.ytimg.com"),
+    ("2026-10-08T20:39:42.510Z", "rr4---sn-qjp5q5-5q.googlevideo.com"),
+    ("2026-10-08T20:39:42.528Z", "rr4.sn-qjp5q5-5q.googlevideo.com"),
+    ("2026-10-08T20:39:59.242Z", "rr2---sn-p5qlsndk.googlevideo.com"),
+    ("2026-10-08T20:39:59.266Z", "rr2.sn-p5qlsndk.googlevideo.com"),
+    ("2026-10-08T20:40:07.814Z", "rr3---sn-2op5q5-5u.googlevideo.com"),
+    ("2026-10-08T20:40:07.832Z", "rr3.sn-2op5q5-5u.googlevideo.com"),
+    ("2026-10-08T20:41:51.152Z", "i.ytimg.com"),
+    ("2026-10-08T20:42:52.814Z", "www.youtube.com"),
+    ("2026-10-08T20:45:19.567Z", "rr3---sn-2op5q5-5u.googlevideo.com"),
+    ("2026-10-08T20:46:03.214Z", "accounts.google.com"),
+    ("2026-10-08T20:46:26.543Z", "accounts.youtube.com"),
+    ("2026-10-08T20:48:11.827Z", "www.youtube.com"),
+    ("2026-10-08T20:54:12.543Z", "www.youtube.com"),
+    ("2026-10-08T20:56:06.411Z", "accounts.google.com"),
+    ("2026-10-08T20:56:27.133Z", "accounts.youtube.com"),
+    ("2026-10-08T20:58:12.401Z", "accounts.google.com"),
+    ("2026-10-08T21:00:12.903Z", "www.youtube.com"),
+    ("2026-10-08T21:06:08.414Z", "accounts.google.com"),
+    ("2026-10-08T21:06:12.814Z", "www.youtube.com"),
+    ("2026-10-08T21:06:28.060Z", "accounts.youtube.com"),
+    ("2026-10-08T21:12:12.812Z", "www.youtube.com"),
+    ("2026-10-08T21:15:45.965Z", "rr3---sn-2op5q5-5u.googlevideo.com"),
+    ("2026-10-08T21:16:10.411Z", "accounts.google.com"),
+    ("2026-10-08T21:16:28.507Z", "accounts.youtube.com"),
+    ("2026-10-08T21:18:12.814Z", "www.youtube.com"),
+    ("2026-10-08T21:19:17.013Z", "accounts.google.com"),
+    ("2026-10-08T21:24:12.815Z", "www.youtube.com"),
+    ("2026-10-08T21:25:22.137Z", "accounts.google.com"),
+    ("2026-10-08T21:26:12.411Z", "accounts.google.com"),
+    ("2026-10-08T21:26:12.815Z", "www.youtube.com"),
+    ("2026-10-08T21:26:29.488Z", "accounts.youtube.com"),
+    ("2026-10-08T21:30:12.817Z", "www.youtube.com"),
+    ("2026-10-08T21:35:31.771Z", "www.youtube.com"),
+    ("2026-10-08T21:36:14.554Z", "accounts.google.com"),
+    ("2026-10-08T21:36:29.788Z", "accounts.youtube.com"),
+    ("2026-10-08T21:40:27.896Z", "i.ytimg.com"),
+    ("2026-10-08T21:40:27.908Z", "i1.ytimg.com"),
+    ("2026-10-08T21:41:31.880Z", "www.youtube.com"),
+    ("2026-10-08T21:46:16.420Z", "accounts.google.com"),
+    ("2026-10-08T21:46:31.412Z", "accounts.youtube.com"),
+    ("2026-10-08T21:56:18.417Z", "accounts.google.com"),
+    ("2026-10-08T21:56:33.417Z", "accounts.youtube.com"),
+    ("2026-10-08T22:02:33.264Z", "www.youtube.com"),
+    ("2026-10-08T22:06:20.420Z", "accounts.google.com"),
+    ("2026-10-08T22:06:35.418Z", "accounts.youtube.com"),
+    ("2026-10-08T22:16:22.420Z", "accounts.google.com"),
+    ("2026-10-08T22:16:37.420Z", "accounts.youtube.com"),
+    ("2026-10-08T22:19:17.016Z", "accounts.google.com"),
+    ("2026-10-08T22:26:24.418Z", "accounts.google.com"),
+    ("2026-10-08T22:26:39.421Z", "accounts.youtube.com"),
+    ("2026-10-08T22:36:26.416Z", "accounts.google.com"),
+    ("2026-10-08T22:36:41.505Z", "accounts.youtube.com"),
+    ("2026-10-08T22:46:28.414Z", "accounts.google.com"),
+    ("2026-10-08T22:46:43.506Z", "accounts.youtube.com"),
+    ("2026-10-08T22:56:29.413Z", "accounts.google.com"),
+    ("2026-10-08T22:56:45.435Z", "accounts.youtube.com"),
+    ("2026-10-08T23:06:31.410Z", "accounts.google.com"),
+    ("2026-10-08T23:06:47.507Z", "accounts.youtube.com"),
+    ("2026-10-08T23:16:32.414Z", "accounts.google.com"),
+    ("2026-10-08T23:16:49.412Z", "accounts.youtube.com"),
+    ("2026-10-08T23:19:17.008Z", "accounts.google.com"),
+    ("2026-10-08T23:26:34.415Z", "accounts.google.com"),
+    ("2026-10-08T23:26:51.412Z", "accounts.youtube.com"),
+    ("2026-10-08T23:36:36.407Z", "accounts.google.com"),
+    ("2026-10-08T23:36:52.408Z", "accounts.youtube.com"),
+    ("2026-10-08T23:46:38.405Z", "accounts.google.com"),
+    ("2026-10-08T23:46:54.405Z", "accounts.youtube.com"),
+    ("2026-10-08T23:56:40.398Z", "accounts.google.com"),
+    ("2026-10-08T23:56:56.402Z", "accounts.youtube.com"),
+    ("2026-10-09T00:06:41.400Z", "accounts.google.com"),
+    ("2026-10-09T00:06:58.398Z", "accounts.youtube.com"),
+    ("2026-10-09T00:16:42.394Z", "accounts.google.com"),
+    ("2026-10-09T00:17:00.396Z", "accounts.youtube.com"),
+    ("2026-10-09T00:19:16.989Z", "accounts.google.com"),
+    ("2026-10-09T00:25:55.536Z", "www.youtube.com"),
+    ("2026-10-09T00:26:11.422Z", "i.ytimg.com"),
+    ("2026-10-09T00:26:44.394Z", "accounts.google.com"),
+    ("2026-10-09T00:27:02.396Z", "accounts.youtube.com"),
+    ("2026-10-09T00:27:12.420Z", "i.ytimg.com"),
+]
+
+
+def insert_calibration(conn):
+    insert_queries(
+        conn,
+        [
+            (parse_timestamp(ts), domain, "Fox Hunt")
+            for ts, domain in CALIBRATION_2026_10_08
+        ],
+    )
+
+
+def youtube_sessions(conn):
+    return [
+        (start, end, minutes)
+        for code, _, start, end, minutes in sessions_table(conn)
+        if code == "youtube"
+    ]
+
+
+def test_calibration_youtube_matches_the_watched_hour(conn):
+    insert_calibration(conn)
+    process(conn, tz=NEW_YORK)
+    assert youtube_sessions(conn) == [
+        ("2026-10-08T20:39:34.644Z", "2026-10-08T21:41:31.880Z", 61.954),
+        ("2026-10-08T22:02:33.264Z", "2026-10-08T22:02:33.264Z", 0.0),
+        ("2026-10-09T00:25:55.536Z", "2026-10-09T00:27:12.420Z", 1.281),
+    ]
+    assert {code for code, *_ in sessions_table(conn)} == {"youtube"}
+    [(code, day, minutes, count, _)] = metrics_table(conn)
+    assert (code, day, count) == ("youtube", "2026-10-08", 3)
+    assert minutes == pytest.approx(63.235)
+
+
+def test_calibration_without_the_exclusion_overcounts(conn, monkeypatch):
+    monkeypatch.setattr(processor, "EXCLUDED_DOMAINS", ())
+    insert_calibration(conn)
+    process(conn, tz=NEW_YORK)
+    assert youtube_sessions(conn) == [
+        ("2026-10-08T20:39:34.644Z", "2026-10-09T00:27:12.420Z", 227.63)
+    ]
+
+
+def test_changing_exclusions_reclassifies_history(conn, monkeypatch):
+    insert_calibration(conn)
+    monkeypatch.setattr(processor, "EXCLUDED_DOMAINS", ())
+    assert classify(conn) == len(CALIBRATION_2026_10_08)
+    monkeypatch.undo()
+    assert classify(conn) == len(CALIBRATION_2026_10_08)
+    matched = conn.execute(
+        "SELECT domain_queried FROM queries WHERE service_id IS NOT NULL"
+    ).fetchall()
+    assert {domain for (domain,) in matched}.isdisjoint(
+        {"accounts.youtube.com", "accounts.google.com"}
+    )
 
 
 def test_config_from_env():

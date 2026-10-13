@@ -272,11 +272,14 @@ Steps 3-7 recompute from every matched query on each run rather than appending, 
 - Netflix: `netflix.com`, `netflix.net`, `nflxvideo.net`, `nflximg.net`, `nflxext.com`, `nflxso.net`
 - Spotify: `spotify.com`, `scdn.co`, `pscdn.co` (covers `audio-sp-*.pscdn.co`), `spotifycdn.com`, `spotifycdn.net`
 - Disney+: `disneyplus.com`, `disney-plus.net`, `bamgrid.com`, `dssott.com`
-- YouTube: `youtube.com`, `youtu.be`, `googlevideo.com`, `ytimg.com`
+- YouTube: `youtube.com`, `youtu.be`, `googlevideo.com`, `ytimg.com`, except `accounts.youtube.com` (see excluded hosts below)
 - Apple TV+: `tv.apple.com` only, so `ocsp.apple.com` certificate checks are not counted
 - HBO Max: `hbomax.com`, `max.com`
 - Paramount+: `paramountplus.com`, `cbsaavideo.com`
 - Prime Video: `primevideo.com`, `aiv-cdn.net`, `aiv-delivery.net`, `amazon.com` (ambiguous; see limitations below)
+
+**Excluded hosts** (`EXCLUDED_DOMAINS` in `sverdrup/services.py`): a host on this list, and its subdomains, match no service even though they sit under a service domain. The most specific listed suffix decides, so a service domain beneath an excluded one still matches. Changing the list reclassifies every stored query on the next processor run.
+- `accounts.youtube.com`: Google's signed-in pages (Gmail, Calendar, Chat) refresh its cookies about every 10 minutes whether or not YouTube is open. In the 2026-10-08 calibration it chained an idle Google tab into a 227.6-minute YouTube session for 60.3 minutes actually watched; excluded, the session measured 62.0 minutes.
 
 `braintree-api.com` from the original sketch is left out: it is a payment processor that many unrelated sites use, so it would attribute their traffic to Disney+.
 

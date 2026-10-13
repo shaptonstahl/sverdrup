@@ -45,7 +45,7 @@ from sverdrup.db import (  # noqa: E402
     set_meta,
 )
 from sverdrup.runlock import run_lock  # noqa: E402
-from sverdrup.services import DomainMatcher  # noqa: E402
+from sverdrup.services import EXCLUDED_DOMAINS, DomainMatcher  # noqa: E402
 
 log = logging.getLogger("sverdrup.processor")
 
@@ -183,13 +183,17 @@ class DailyMetric:
 def classify(conn: sqlite3.Connection) -> int:
     """Tag unprocessed queries with their service. Returns the number tagged.
 
-    When the services table differs from the one used for earlier runs, every
-    query is reclassified so mapping changes apply to history too.
+    When the services table or the excluded domains differ from those used for
+    earlier runs, every query is reclassified so mapping changes apply to
+    history too.
     """
     services = conn.execute("SELECT id, domains FROM services ORDER BY id").fetchall()
-    fingerprint = hashlib.sha256(json.dumps(services).encode()).hexdigest()
+    fingerprint = hashlib.sha256(
+        json.dumps([services, sorted(EXCLUDED_DOMAINS)]).encode()
+    ).hexdigest()
     matcher = DomainMatcher(
-        {domain: sid for sid, domains in services for domain in json.loads(domains)}
+        {domain: sid for sid, domains in services for domain in json.loads(domains)},
+        EXCLUDED_DOMAINS,
     )
     with conn:
         previous = get_meta(conn, "classifier_fingerprint")
