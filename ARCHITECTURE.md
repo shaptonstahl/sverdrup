@@ -259,7 +259,7 @@ An API key belongs to a NextDNS account, and an account can own profiles you do 
 
 **Algorithm:**
 1. Read unprocessed queries from `queries` table
-2. For each query, match domain to a streaming service using a domain-to-service mapping; store the match and mark the query processed. If the services table has changed since the last run, reclassify every query
+2. For each query, match domain to a streaming service using a domain-to-service mapping; store the match and mark the query processed. If the services table or the excluded hosts have changed since the last run, reclassify every query
 3. Group consecutive matched queries (same service, same account, any profile, any device) into sessions, using the gap threshold: a gap longer than the threshold starts a new session; a gap exactly equal to it does not. Profile and device never split a session: NextDNS is usually set up at the router, so the logged device is unreliable, and profiles are many-to-many with clients (a client can move onto a VPN profile mid-viewing). Each session records every profile and device it touched
 4. Calculate session length in minutes (last query minus first query)
 5. Aggregate by service, profile and local day: sum total_minutes, count sessions, take the latest matched query as last_seen (or, for a day that has minutes but no matched query, such as a profile segment crossing midnight, the end of the latest minutes credited that day). Within a session, the time between two queries belongs to the profile of the earlier query, and the session counts once, under the profile it started in
@@ -272,11 +272,14 @@ Steps 3-7 recompute from every matched query on each run rather than appending, 
 - Netflix: `netflix.com`, `netflix.net`, `nflxvideo.net`, `nflximg.net`, `nflxext.com`, `nflxso.net`
 - Spotify: `spotify.com`, `scdn.co`, `pscdn.co` (covers `audio-sp-*.pscdn.co`), `spotifycdn.com`, `spotifycdn.net`
 - Disney+: `disneyplus.com`, `disney-plus.net`, `bamgrid.com`, `dssott.com`
-- YouTube: `youtube.com`, `youtu.be`, `googlevideo.com`, `ytimg.com`
+- YouTube: `youtube.com`, `youtu.be`, `googlevideo.com`, `ytimg.com`, except `accounts.youtube.com` (see excluded hosts below)
 - Apple TV+: `tv.apple.com` only, so `ocsp.apple.com` certificate checks are not counted
 - HBO Max: `hbomax.com`, `max.com`
 - Paramount+: `paramountplus.com`, `cbsaavideo.com`
 - Prime Video: `primevideo.com`, `aiv-cdn.net`, `aiv-delivery.net`, `amazon.com` (ambiguous; see limitations below)
+
+**Excluded hosts** (`EXCLUDED_DOMAINS` in `sverdrup/services.py`): a host on this list, and its subdomains, match no service even though they sit under a service domain. The most specific listed suffix decides, so a service domain beneath an excluded one still matches. Changing the list reclassifies every stored query on the next processor run.
+- `accounts.youtube.com`: Google's signed-in pages (Gmail, Calendar, Chat) refresh its cookies about every 10 minutes whether or not YouTube is open. In the 2026-10-08 calibration it chained an idle Google tab into a 227.6-minute YouTube session for 60.3 minutes actually watched; excluded, the session measured 62.0 minutes.
 
 `braintree-api.com` from the original sketch is left out: it is a payment processor that many unrelated sites use, so it would attribute their traffic to Disney+.
 

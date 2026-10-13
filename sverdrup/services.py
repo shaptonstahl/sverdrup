@@ -4,7 +4,9 @@ A service matches a queried domain when one of its domains equals the
 queried domain or is a parent of it (``nflxvideo.net`` matches
 ``ipv4-c001.nflxvideo.net``). Matching is on whole DNS labels, so
 ``notnetflix.com`` does not match ``netflix.com``. When domains from two
-services overlap, the longest (most specific) one wins.
+services overlap, the longest (most specific) one wins. An excluded domain
+matches no service, even under a service domain, unless a more specific
+service domain sits beneath it.
 
 This list is the source of truth; ``sverdrup.db.init_db`` mirrors it into the
 ``services`` table. Keep it in sync with the domain mappings in
@@ -13,6 +15,7 @@ ARCHITECTURE.md.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 
@@ -68,6 +71,13 @@ SERVICES: tuple[Service, ...] = (
 )
 
 
+# Hosts under a service domain that are not viewing. Google's signed-in pages
+# refresh accounts.youtube.com cookies every ~10 minutes whether or not
+# YouTube is open, which chained hours of an idle Google tab into one YouTube
+# session (227.6 minutes measured for 60.3 watched, calibration of 2026-10-08).
+EXCLUDED_DOMAINS: tuple[str, ...] = ("accounts.youtube.com",)
+
+
 def normalize_domain(domain: str) -> str:
     """Lowercase a domain and strip surrounding whitespace and the root dot."""
     return domain.strip().lower().rstrip(".")
@@ -76,19 +86,31 @@ def normalize_domain(domain: str) -> str:
 class DomainMatcher:
     """Map queried domains to a service key using whole-label suffix matching."""
 
-    def __init__(self, domain_to_key: dict[str, object]) -> None:
+    def __init__(
+        self, domain_to_key: dict[str, object], exclude: Iterable[str] = ()
+    ) -> None:
         self._lookup = {normalize_domain(d): key for d, key in domain_to_key.items()}
+        self._exclude = {normalize_domain(d) for d in exclude}
 
     def match(self, domain: str) -> object | None:
-        """Return the key for the most specific matching domain, or None."""
+        """Return the key for the most specific matching domain, or None.
+
+        The most specific listed suffix decides: an excluded one yields None.
+        """
         labels = normalize_domain(domain).split(".")
         for i in range(len(labels)):
-            key = self._lookup.get(".".join(labels[i:]))
+            suffix = ".".join(labels[i:])
+            if suffix in self._exclude:
+                return None
+            key = self._lookup.get(suffix)
             if key is not None:
                 return key
         return None
 
 
-def matcher_by_code(services: tuple[Service, ...] = SERVICES) -> DomainMatcher:
+def matcher_by_code(
+    services: tuple[Service, ...] = SERVICES,
+    exclude: Iterable[str] = EXCLUDED_DOMAINS,
+) -> DomainMatcher:
     """Build a matcher that returns service codes."""
-    return DomainMatcher({d: s.code for s in services for d in s.domains})
+    return DomainMatcher({d: s.code for s in services for d in s.domains}, exclude)

@@ -3,7 +3,13 @@ import json
 import pytest
 
 from sverdrup.db import init_db
-from sverdrup.services import SERVICES, DomainMatcher, Service, matcher_by_code
+from sverdrup.services import (
+    EXCLUDED_DOMAINS,
+    SERVICES,
+    DomainMatcher,
+    Service,
+    matcher_by_code,
+)
 
 
 @pytest.mark.parametrize(
@@ -34,6 +40,10 @@ def test_matches_service_domains_and_subdomains(domain, expected):
         "notnetflix.com",  # suffix match is on whole labels only
         "netflix.com.evil.example",
         "ocsp.apple.com",  # Apple certificate checks are not viewing
+        "accounts.youtube.com",  # Google sign-in cookie refresh, not viewing
+        "ACCOUNTS.YOUTUBE.COM.",
+        "x.accounts.youtube.com",
+        "accounts.google.com",  # matches no service domain to begin with
         "apple.com",
         "com",
         "example.org",
@@ -48,6 +58,34 @@ def test_most_specific_domain_wins():
     matcher = DomainMatcher({"apple.com": "apple", "tv.apple.com": "apple_tv"})
     assert matcher.match("x.tv.apple.com") == "apple_tv"
     assert matcher.match("www.apple.com") == "apple"
+
+
+def test_youtube_hosts_beside_the_excluded_one_still_match():
+    matcher = matcher_by_code()
+    assert matcher.match("www.youtube.com") == "youtube"
+    assert matcher.match("youtube.com") == "youtube"
+    assert matcher.match("notaccounts.youtube.com") == "youtube"
+
+
+def test_excluded_domain_yields_to_a_more_specific_service_domain():
+    matcher = DomainMatcher(
+        {"example.com": "a", "tv.portal.example.com": "b"},
+        exclude=["portal.example.com"],
+    )
+    assert matcher.match("www.example.com") == "a"
+    assert matcher.match("portal.example.com") is None
+    assert matcher.match("x.portal.example.com") is None
+    assert matcher.match("tv.portal.example.com") == "b"
+
+
+def test_matcher_without_exclusions_counts_accounts_youtube_com():
+    assert matcher_by_code(exclude=()).match("accounts.youtube.com") == "youtube"
+
+
+def test_excluded_domains_are_normalized_and_not_service_domains():
+    domains = {d for s in SERVICES for d in s.domains}
+    assert all(d == d.lower().strip(".") for d in EXCLUDED_DOMAINS)
+    assert not domains & set(EXCLUDED_DOMAINS)
 
 
 def test_seed_list_domains_are_unique_and_normalized():
