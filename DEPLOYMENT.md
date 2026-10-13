@@ -39,29 +39,29 @@ DASHBOARD_PORT=8080
 
 ### Run with Docker Compose (Miracle / Synology layout)
 
-The repository ships `docker-compose.example.yml`, not a `docker-compose.yml`. A deployment keeps its own `docker-compose.yml`, `.env` and `data/` in a parent project directory, with the git clone in a `srv/` subfolder beneath it. A `git pull` then never touches your configuration or your database. On Miracle the project directory is `/volume1/docker/sverdrup`:
+The repository ships `docker-compose.example.yml`, not a `docker-compose.yml`. A deployment keeps its own `docker-compose.yml`, `.env` and `data/` in a parent project directory, with the git clone in a `src/` subfolder beneath it. A `git pull` then never touches your configuration or your database. On Miracle the project directory is `/volume1/docker/sverdrup`:
 
 ```
 /volume1/docker/sverdrup/
-  docker-compose.yml   # copied from srv/docker-compose.example.yml
-  .env                 # copied from srv/.env.example
+  docker-compose.yml   # copied from src/docker-compose.example.yml
+  .env                 # copied from src/.env.example
   data/                # SQLite database, bind-mounted at /data
-  srv/                 # git clone of sverdrup
+  src/                 # git clone of sverdrup
 ```
 
-1. Clone the repository into the `srv` subfolder:
+1. Clone the repository into the `src` subfolder:
    ```bash
    mkdir -p /volume1/docker/sverdrup
    cd /volume1/docker/sverdrup
-   git clone https://github.com/shaptonstahl/sverdrup.git srv
+   git clone https://github.com/shaptonstahl/sverdrup.git src
    ```
 2. Copy the Compose example up into the project directory:
    ```bash
-   cp srv/docker-compose.example.yml docker-compose.yml
+   cp src/docker-compose.example.yml docker-compose.yml
    ```
 3. Copy the environment example and fill in your NextDNS accounts, API keys, profile IDs and `TZ` (see [Environment Setup](#environment-setup)):
    ```bash
-   cp srv/.env.example .env
+   cp src/.env.example .env
    chmod 600 .env
    ```
 4. Create the data directory outside the repo:
@@ -78,10 +78,10 @@ Compose reads `.env` in the project directory both to fill `${DASHBOARD_PORT}` i
 To update to the latest code, pull the clone and rebuild:
 
 ```bash
-cd /volume1/docker/sverdrup && git -C srv pull && docker compose up -d --build
+cd /volume1/docker/sverdrup && git -C src pull && docker compose up -d --build
 ```
 
-For local development inside a clone, copy `docker-compose.example.yml` to `docker-compose.yml` in the repo root (it is git-ignored), change `build: ./srv` to `build: .`, and keep `.env` next to it; the database then lands in the repo's git-ignored `data/`.
+For local development inside a clone, copy `docker-compose.example.yml` to `docker-compose.yml` in the repo root (it is git-ignored), change `build: ./src` to `build: .`, and keep `.env` next to it; the database then lands in the repo's git-ignored `data/`.
 
 Or without Compose:
 
