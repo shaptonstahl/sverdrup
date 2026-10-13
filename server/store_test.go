@@ -42,7 +42,7 @@ func TestPeriodAt(t *testing.T) {
 
 func TestServiceSummariesHousehold(t *testing.T) {
 	store := openFixture(t)
-	got, err := store.ServiceSummaries(context.Background(), PeriodAt(fixtureNow), nil)
+	got, err := store.ServiceSummaries(context.Background(), PeriodAt(fixtureNow), Scope{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestServiceSummariesHousehold(t *testing.T) {
 func TestServiceSummariesForDevice(t *testing.T) {
 	store := openFixture(t)
 	p := PeriodAt(fixtureNow)
-	got, err := store.ServiceSummaries(context.Background(), p, &DeviceKey{Account: "home", Name: "Living Room TV"})
+	got, err := store.ServiceSummaries(context.Background(), p, Scope{Device: &DeviceKey{Account: "home", Name: "Living Room TV"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestDeviceSummaries(t *testing.T) {
 
 func TestDailyMetricsFillsEveryDay(t *testing.T) {
 	store := openFixture(t)
-	got, err := store.DailyMetrics(context.Background(), netflixID, date("2026-10-01"), date("2026-10-07"), nil)
+	got, err := store.DailyMetrics(context.Background(), netflixID, date("2026-10-01"), date("2026-10-07"), Scope{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestDailyMetricsFillsEveryDay(t *testing.T) {
 	}
 
 	dev, err := store.DailyMetrics(context.Background(), netflixID, date("2026-10-06"), date("2026-10-06"),
-		&DeviceKey{Account: "home", Name: "phone:a"})
+		Scope{Device: &DeviceKey{Account: "home", Name: "phone:a"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,10 +149,10 @@ func TestDailyMetricsFillsEveryDay(t *testing.T) {
 func TestMedianDaysBetweenUse(t *testing.T) {
 	store := openFixture(t)
 	ctx := context.Background()
-	if gap, ok, err := store.MedianDaysBetweenUse(ctx, netflixID); err != nil || !ok || gap != 3 {
+	if gap, ok, err := store.MedianDaysBetweenUse(ctx, netflixID, Scope{}); err != nil || !ok || gap != 3 {
 		t.Errorf("netflix median = %v, %v, %v; want 3", gap, ok, err)
 	}
-	if _, ok, err := store.MedianDaysBetweenUse(ctx, spotifyID); err != nil || ok {
+	if _, ok, err := store.MedianDaysBetweenUse(ctx, spotifyID, Scope{}); err != nil || ok {
 		t.Errorf("one day of use gave a median (ok=%v, err=%v)", ok, err)
 	}
 
@@ -160,7 +160,7 @@ func TestMedianDaysBetweenUse(t *testing.T) {
 		VALUES (1, 'home', 'p1', '2026-10-07', 5, 1, '2026-10-07T09:00:00.000Z'),
 		       (1, 'home', 'p1', '2026-10-05', 0, 0, '2026-10-05T09:00:00.000Z')`)
 	// Gaps 2, 4, 1 (a zero-usage day does not count as use): median 2.
-	if gap, ok, err := odd.MedianDaysBetweenUse(ctx, netflixID); err != nil || !ok || gap != 2 {
+	if gap, ok, err := odd.MedianDaysBetweenUse(ctx, netflixID, Scope{}); err != nil || !ok || gap != 2 {
 		t.Errorf("odd median = %v, %v, %v; want 2", gap, ok, err)
 	}
 }
@@ -168,7 +168,7 @@ func TestMedianDaysBetweenUse(t *testing.T) {
 func TestRecentSessions(t *testing.T) {
 	store := openFixture(t)
 	ctx := context.Background()
-	all, err := store.RecentSessions(ctx, nil, 50)
+	all, err := store.RecentSessions(ctx, nil, 50, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,7 @@ func TestRecentSessions(t *testing.T) {
 		t.Errorf("session 4 = %+v", all[1])
 	}
 	id := int64(netflixID)
-	two, err := store.RecentSessions(ctx, &id, 2)
+	two, err := store.RecentSessions(ctx, &id, 2, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestMissingDatabaseIsNoDataAndNotCreated(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	_, err = store.ServiceSummaries(context.Background(), PeriodAt(fixtureNow), nil)
+	_, err = store.ServiceSummaries(context.Background(), PeriodAt(fixtureNow), Scope{})
 	if !errors.Is(err, ErrNoData) {
 		t.Fatalf("err = %v, want ErrNoData", err)
 	}
@@ -235,7 +235,7 @@ func TestEmptyDatabaseIsNoData(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if _, err := store.RecentSessions(context.Background(), nil, 5); !errors.Is(err, ErrNoData) {
+	if _, err := store.RecentSessions(context.Background(), nil, 5, ""); !errors.Is(err, ErrNoData) {
 		t.Errorf("err = %v, want ErrNoData", err)
 	}
 }
@@ -260,14 +260,14 @@ func TestReadsWhileProcessorWrites(t *testing.T) {
 	}
 	defer store.Close()
 	// WAL lets the reader see the last committed state during the write.
-	got, err := store.RecentSessions(context.Background(), nil, 50)
+	got, err := store.RecentSessions(context.Background(), nil, 50, "")
 	if err != nil || len(got) != 5 {
 		t.Fatalf("during write: %d sessions, err %v", len(got), err)
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	got, err = store.RecentSessions(context.Background(), nil, 50)
+	got, err = store.RecentSessions(context.Background(), nil, 50, "")
 	if err != nil || len(got) != 0 {
 		t.Fatalf("after commit: %d sessions, err %v", len(got), err)
 	}
@@ -323,7 +323,7 @@ func TestUnopenableDatabaseIsAFault(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	_, err = store.ServiceSummaries(context.Background(), PeriodAt(fixtureNow), nil)
+	_, err = store.ServiceSummaries(context.Background(), PeriodAt(fixtureNow), Scope{})
 	if err == nil || errors.Is(err, ErrNoData) {
 		t.Fatalf("err = %v, want a fault other than ErrNoData", err)
 	}

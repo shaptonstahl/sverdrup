@@ -20,6 +20,7 @@ main { max-width: 64rem; margin: 0 auto; padding: 0 1rem 2rem; }
 h1 { font-size: 1.5rem; margin: 1rem 0 .75rem; }
 h2 { font-size: 1.15rem; margin: 1.5rem 0 .5rem; }
 .hint { font-size: .9rem; margin: 0 0 .5rem; }
+ul.hint { padding-left: 1.2rem; }
 .crumbs { margin: .75rem 0 0; font-size: .9rem; }
 .notice { background: var(--notice); padding: .6rem .8rem; border-radius: 6px; }
 .filter { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
@@ -34,7 +35,7 @@ th, td { text-align: left; padding: .45rem .6rem; border-bottom: 1px solid var(-
 th { font-size: .85rem; color: var(--muted); font-weight: 600; }
 td { overflow-wrap: anywhere; }
 .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.ranges { display: flex; gap: .5rem; margin-bottom: .5rem; }
+.ranges { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: .5rem; }
 .ranges a { padding: .2rem .6rem; border: 1px solid var(--line); border-radius: 999px; text-decoration: none; }
 .ranges a[aria-current] { background: var(--accent); border-color: var(--accent); color: var(--bg); }
 .spark { display: block; width: 100%; height: 4.5rem; background: var(--card);
