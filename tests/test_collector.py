@@ -1,4 +1,6 @@
 import logging
+import sqlite3
+import threading
 
 import pytest
 
@@ -45,7 +47,13 @@ def test_backfill_on_empty_database_fetches_everything(conn, client, nextdns):
     # Backfill sends no lower bound, asks oldest-first, and follows the cursor.
     assert "from" not in nextdns.requests[0]["params"]
     assert nextdns.requests[0]["params"]["sort"] == "asc"
-    assert [r["params"].get("cursor") for r in nextdns.requests] == [None, "10", "20"]
+    # The last request reaches the live edge: an empty page ends the run.
+    assert [r["params"].get("cursor") for r in nextdns.requests] == [
+        None,
+        "10",
+        "20",
+        "25",
+    ]
     assert get_meta(conn, META + "earliest_timestamp") == "2026-03-01T10:00:00.000Z"
     assert get_meta(conn, META + "latest_timestamp") == "2026-03-01T10:24:00.000Z"
     assert get_meta(conn, META + "backfill_completed_at") is not None
@@ -75,6 +83,57 @@ def test_overlapping_windows_never_double_insert(conn, client, nextdns):
     assert again.fetched == 11
     assert again.inserted == 0
     assert len(stored(conn)) == 12
+
+
+def test_caught_up_profile_stops_at_the_live_edge(conn, client, nextdns):
+    # NextDNS never ends oldest-first paging; past the newest entry it returns
+    # an empty page with the same cursor forever.
+    nextdns.entries = minute_entries(10, 3)
+    collect(conn, client)
+    nextdns.requests.clear()
+
+    result = collect(conn, client, now=lambda: utc(2026, 3, 2))
+
+    assert result.inserted == 0
+    assert len(nextdns.requests) == 2  # the overlap page, then one empty page
+    assert get_meta(conn, META + "last_collect_at") == "2026-03-02T00:00:00.000Z"
+
+
+def test_paging_stops_when_the_cursor_repeats(nextdns):
+    client = NextDNSClient(nextdns.url, API_KEY)
+    responses = iter(
+        [
+            {"data": [{"n": 1}], "meta": {"pagination": {"cursor": "a"}}},
+            {"data": [{"n": 2}], "meta": {"pagination": {"cursor": "a"}}},
+            {"data": [{"n": 3}], "meta": {"pagination": {"cursor": "b"}}},
+        ]
+    )
+    client._get = lambda url, params: next(responses)
+
+    assert list(client.iter_pages(PROFILE_ID, None)) == [[{"n": 1}], [{"n": 2}]]
+
+
+def test_page_waits_for_another_writer_instead_of_failing(
+    conn, client, nextdns, db_path
+):
+    # A page with nothing to insert still reads and then writes metadata. It
+    # must queue behind a writer such as the processor's rebuild, not fail
+    # with "database is locked" (a deferred read-then-write cannot wait).
+    nextdns.entries = minute_entries(10, 1)
+    collect(conn, client)
+    nextdns.entries = [log_entry("2026-03-01T10:05:00.000Z", "not a domain")]
+    writer = sqlite3.connect(db_path, isolation_level=None, check_same_thread=False)
+    writer.execute("BEGIN IMMEDIATE")
+    release = threading.Timer(0.3, writer.execute, ["COMMIT"])
+    release.start()
+    try:
+        result = collect(conn, client)
+    finally:
+        release.join()
+        writer.close()
+
+    assert result.skipped == 1
+    assert get_meta(conn, META + "last_collect_at") is not None
 
 
 def test_dedup_key_ignores_field_order_but_not_identity():
@@ -312,6 +371,36 @@ def test_main_keeps_collecting_other_profiles_when_one_fails(nextdns, db_path, c
 
     assert collector.main(env) == 2
     assert conn.execute("SELECT COUNT(*) FROM queries").fetchone()[0] == 7
+
+
+def test_main_treats_a_locked_database_as_a_profile_failure(
+    nextdns, db_path, conn, monkeypatch, caplog
+):
+    env = two_account_env(nextdns, db_path)
+    nextdns.logs = {"def456": minute_entries(11, 3), "fam001": minute_entries(12, 4)}
+    real = collector.collect_profile
+
+    def locked_for_first_profile(conn, client, account, profile_id, **kwargs):
+        if profile_id == PROFILE_ID:
+            raise sqlite3.OperationalError("database is locked")
+        return real(conn, client, account, profile_id, **kwargs)
+
+    monkeypatch.setattr(collector, "collect_profile", locked_for_first_profile)
+    with caplog.at_level(logging.ERROR):
+        assert collector.main(env) == 2
+    assert f"home/{PROFILE_ID}: collection stopped" in caplog.text
+    assert conn.execute("SELECT COUNT(*) FROM queries").fetchone()[0] == 7
+
+
+def test_main_still_fails_on_other_database_errors(nextdns, db_path, monkeypatch):
+    env = two_account_env(nextdns, db_path)
+
+    def broken(*args, **kwargs):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(collector, "collect_profile", broken)
+    with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+        collector.main(env)
 
 
 def run_main(env, caplog, capsys):
