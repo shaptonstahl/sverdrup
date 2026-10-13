@@ -210,6 +210,9 @@ class NextDNSClient:
         """Yield a profile's log entries a page at a time, oldest first.
 
         ``since`` bounds the oldest entry; None fetches everything retained.
+        NextDNS never ends oldest-first paging: past the newest entry it keeps
+        returning an empty page with the same cursor. So paging stops at an
+        empty page, or when the cursor comes back unchanged.
         """
         url = f"{self._api_url}/profiles/{urllib.parse.quote(profile_id, safe='')}/logs"
         params: dict[str, str] = {"sort": "asc", "limit": str(self._page_size)}
@@ -220,11 +223,13 @@ class NextDNSClient:
             data = body.get("data")
             if not isinstance(data, list):
                 raise NextDNSError("NextDNS response has no data list")
+            if not data:
+                return
             yield data
             meta = body.get("meta")
             pagination = meta.get("pagination") if isinstance(meta, dict) else None
             cursor = pagination.get("cursor") if isinstance(pagination, dict) else None
-            if not cursor:
+            if not cursor or str(cursor) == params.get("cursor"):
                 return
             params["cursor"] = str(cursor)
 
@@ -383,6 +388,10 @@ def collect_profile(
             )
         result.fetched += len(page)
         with conn:
+            # Take the write lock first. A deferred transaction that reads and
+            # then writes fails at once with "database is locked" while another
+            # writer (the processor) holds the lock; this waits for it instead.
+            conn.execute("BEGIN IMMEDIATE")
             before = conn.total_changes
             conn.executemany(
                 "INSERT OR IGNORE INTO queries (account, profile_id, timestamp,"
@@ -391,15 +400,19 @@ def collect_profile(
                 rows,
             )
             result.inserted += conn.total_changes - before
+            # Separate subqueries let SQLite answer each from the index in one
+            # step; MIN and MAX in a single SELECT scan the profile's range.
             earliest, newest = conn.execute(
-                "SELECT MIN(timestamp), MAX(timestamp) FROM queries WHERE profile_id = ?",
-                (profile_id,),
+                "SELECT (SELECT MIN(timestamp) FROM queries WHERE profile_id = ?),"
+                " (SELECT MAX(timestamp) FROM queries WHERE profile_id = ?)",
+                (profile_id, profile_id),
             ).fetchone()
             if earliest is not None:
                 set_meta(conn, meta + "earliest_timestamp", earliest)
                 set_meta(conn, meta + "latest_timestamp", newest)
 
     with conn:
+        conn.execute("BEGIN IMMEDIATE")
         stamp = format_timestamp(now())
         set_meta(conn, meta + "last_collect_at", stamp)
         if get_meta(conn, meta + "backfill_completed_at") is None:
@@ -422,6 +435,11 @@ class _RedactFilter(logging.Filter):
         if redacted != message:
             record.msg, record.args = redacted, None
         return True
+
+
+def _is_fatal(err: Exception) -> bool:
+    """True for a database error other than a lock held by another writer."""
+    return isinstance(err, sqlite3.OperationalError) and "locked" not in str(err)
 
 
 def main(environ: Mapping[str, str] | None = None) -> int:
@@ -453,7 +471,9 @@ def main(environ: Mapping[str, str] | None = None) -> int:
                 for profile_id in account.profiles:
                     try:
                         result = collect_profile(conn, client, account.name, profile_id)
-                    except NextDNSError as err:
+                    except (NextDNSError, sqlite3.OperationalError) as err:
+                        if _is_fatal(err):
+                            raise
                         log.error(
                             "%s/%s: collection stopped, will resume next run: %s",
                             account.name,

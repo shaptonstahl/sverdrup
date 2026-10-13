@@ -231,13 +231,13 @@ An API key belongs to a NextDNS account, and an account can own profiles you do 
 **Algorithm (per listed profile):**
 1. If the profile has no stored rows: backfill all available logs (up to the retention window)
 2. Otherwise: poll from the profile's last stored timestamp, minus a 10-minute overlap so late-arriving entries are not missed
-3. Request pages oldest-first (`sort=asc`, `limit=1000`), following the pagination cursor
-4. Insert each page with `INSERT OR IGNORE` on a unique `dedup_key` and commit it, then update the profile's earliest/latest timestamps in metadata
-5. When a run reaches the last page, record the profile's `backfill_completed_at` if it is unset (so a backfill that was interrupted and finished by a later incremental run still counts as complete); exit (memory released)
+3. Request pages oldest-first (`sort=asc`, `limit=1000`), following the pagination cursor. NextDNS never ends oldest-first paging: past the newest entry it keeps returning an empty page with the same cursor, so the collector stops at the first empty page, or when the cursor comes back unchanged
+4. Insert each page with `INSERT OR IGNORE` on a unique `dedup_key` and commit it, then update the profile's earliest/latest timestamps in metadata. Each page's transaction takes the write lock up front (`BEGIN IMMEDIATE`), so it waits out the processor's rebuild under the busy timeout instead of failing
+5. When paging stops, record the profile's `last_collect_at`, and its `backfill_completed_at` if that is unset (so a backfill that was interrupted and finished by a later incremental run still counts as complete); exit (memory released)
 
 **Error handling:**
 - API rate limits: exponential backoff on HTTP 429 and 5xx (2s, 4s, 8s, ... capped at 300s, `Retry-After` honored), up to 6 retries
-- Network errors and other HTTP errors: log, stop that profile, continue with the others; the run exits non-zero and the next scheduled run resumes
+- Network errors, other HTTP errors and a locked database: log, stop that profile, continue with the others; the run exits non-zero and the next scheduled run resumes
 - Invalid data: lowercase and validate domains and timestamps, skip malformed entries, log a count
 - Overlapping runs: a lock file next to the database makes a second run exit immediately
 

@@ -47,6 +47,12 @@ class MockNextDNS:
     headers) responses returned before any real page, to exercise rate
     limiting. ``requests`` records each request's profile, query parameters
     and API key header.
+
+    Like the real API, oldest-first (``sort=asc``) paging never ends: past
+    the newest entry every response is an empty page carrying the same
+    cursor, which picks up entries logged later. Newest-first paging ends
+    with a null cursor. After ``max_requests`` requests the mock answers
+    HTTP 400, so a client that never stops fails instead of hanging.
     """
 
     def __init__(self) -> None:
@@ -54,6 +60,7 @@ class MockNextDNS:
         self.logs: dict[str, list[dict]] = {PROFILE_ID: []}
         self.failures: deque[tuple[int, dict[str, str]]] = deque()
         self.requests: list[dict] = []
+        self.max_requests = 500
         mock = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -94,6 +101,8 @@ class MockNextDNS:
         profile = match.group(1) if match else None
         api_key = handler.headers.get("X-Api-Key")
         self.requests.append({"profile": profile, "params": params, "api_key": api_key})
+        if len(self.requests) > self.max_requests:
+            return self._send(handler, 400, {"errors": [{"code": "tooManyRequests"}]})
         if api_key not in self.accounts:
             return self._send(handler, 403, {"errors": [{"code": "forbidden"}]})
         if profile not in self.accounts[api_key]:
@@ -118,11 +127,11 @@ class MockNextDNS:
         offset = int(params.get("cursor", "0"))
         limit = int(params.get("limit", "100"))
         page = selected[offset : offset + limit]
-        more = offset + limit < len(selected)
-        body = {
-            "data": page,
-            "meta": {"pagination": {"cursor": str(offset + limit) if more else None}},
-        }
+        if params.get("sort") == "asc":
+            cursor: str | None = str(offset + len(page))
+        else:
+            cursor = str(offset + limit) if offset + limit < len(selected) else None
+        body = {"data": page, "meta": {"pagination": {"cursor": cursor}}}
         self._send(handler, 200, body)
 
     @staticmethod
